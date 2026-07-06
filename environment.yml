@@ -1,0 +1,8 @@
+name: topplan
+channels:
+  - conda-forge
+dependencies:
+  - nodejs=24
+  - pnpm
+  - git
+
