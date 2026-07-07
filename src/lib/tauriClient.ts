@@ -78,9 +78,19 @@ export async function hideWindow(): Promise<void> {
   await getCurrentWindow().hide();
 }
 
+export async function minimizeWindow(): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().minimize();
+}
+
 export async function toggleMainWindow(): Promise<void> {
   requireTauri();
   await invoke('toggle_main_window');
+}
+
+export async function savePastedImage(activeFilePath: string, bytes: number[], extension: string): Promise<string> {
+  requireTauri();
+  return invoke<string>('save_pasted_image', { activeFilePath, bytes, extension });
 }
 
 export async function configureAutostart(enabled: boolean): Promise<boolean> {

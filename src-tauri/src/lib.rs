@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -188,6 +188,16 @@ fn ensure_child_path(root: &Path, child_name: &str) -> Result<PathBuf, String> {
     Ok(root.join(clean))
 }
 
+fn safe_image_extension(extension: &str) -> Result<&'static str, String> {
+    match extension.trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "png" => Ok("png"),
+        "jpg" | "jpeg" => Ok("jpg"),
+        "gif" => Ok("gif"),
+        "webp" => Ok("webp"),
+        _ => Err("Unsupported clipboard image format.".to_string()),
+    }
+}
+
 fn extract_image_paths(line: &str) -> Vec<String> {
     let bytes = line.as_bytes();
     let mut output = Vec::new();
@@ -348,6 +358,32 @@ fn resolve_local_asset(path: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn save_pasted_image(active_file_path: String, bytes: Vec<u8>, extension: String) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("Clipboard image is empty.".to_string());
+    }
+
+    let active_path = PathBuf::from(active_file_path);
+    let Some(parent) = active_path.parent() else {
+        return Err("Current Markdown file has no parent directory.".to_string());
+    };
+
+    let extension = safe_image_extension(&extension)?;
+    let picture_dir = parent.join("picture");
+    fs::create_dir_all(&picture_dir).map_err(|error| error.to_string())?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    let file_name = format!("topplan-{timestamp}.{extension}");
+    let image_path = picture_dir.join(&file_name);
+    fs::write(&image_path, bytes).map_err(|error| error.to_string())?;
+
+    Ok(format!("picture/{file_name}"))
+}
+
+#[tauri::command]
 fn toggle_main_window(app: AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
@@ -364,14 +400,17 @@ fn toggle_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+    let mut builder = TrayIconBuilder::new().menu(&menu).show_menu_on_left_click(true);
 
-    TrayIconBuilder::new()
-        .menu(&menu)
-        .show_menu_on_left_click(true)
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -426,6 +465,7 @@ pub fn run() {
             create_markdown_file,
             scan_image_references,
             resolve_local_asset,
+            save_pasted_image,
             toggle_main_window
         ])
         .run(tauri::generate_context!())

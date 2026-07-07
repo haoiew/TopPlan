@@ -2,20 +2,22 @@
   import { onMount } from 'svelte';
   import {
     Clock,
-    Columns2,
-    Eye,
+    Code2,
     FilePlus,
     FileText,
     FolderOpen,
     Image,
-    Minimize2,
-    Pencil,
+    Languages,
+    Minus,
+    PanelLeftClose,
+    PanelLeftOpen,
     Pin,
     PinOff,
     RefreshCw,
-    Save,
     Settings,
+    SquareChevronDown,
     TriangleAlert,
+    X,
   } from '@lucide/svelte';
   import CodeMirrorEditor from './lib/CodeMirrorEditor.svelte';
   import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS, interruptionTemplate, todayFileName } from './lib/defaults';
@@ -28,7 +30,9 @@
     hideWindow,
     isTauriRuntime,
     listMarkdownFiles,
+    minimizeWindow,
     readMarkdownFile,
+    savePastedImage,
     saveSettings,
     scanImageReferences,
     selectWorkspaceDir,
@@ -37,27 +41,33 @@
     writeMarkdownFile,
   } from './lib/tauriClient';
   import { TEXT } from './lib/i18n';
-  import type { AppSettings, ImageReference, LanguageMode, PlanFile, ThemeMode, ViewMode } from './types';
+  import type { AppSettings, ImageReference, LanguageMode, PlanFile, ThemeMode } from './types';
 
   let settings: AppSettings = structuredClone(DEFAULT_SETTINGS);
   let files: PlanFile[] = [];
   let images: ImageReference[] = [];
   let content = '';
-  let viewMode: ViewMode = 'edit';
   let loading = true;
   let saving = false;
   let dirty = false;
+  let sidebarOpen = false;
+  let sourceMode = false;
   let showSettings = false;
   let desktopPreview = false;
   let errorMessage = '';
   let newFileName = '';
+  let scrollVisible = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let readableSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let readableHost: HTMLElement | null = null;
 
   $: activeFile = files.find((file) => file.path === settings.activeFilePath) ?? null;
   $: missingImages = images.filter((item) => item.status === 'missing');
   $: externalImages = images.filter((item) => item.status === 'external');
   $: rendered = renderMarkdown(content, settings.activeFilePath, images);
   $: text = TEXT[settings.language] ?? TEXT.zh;
+  $: wordCount = content.replace(/\s+/g, '').length;
 
   function cloneSettings(next: Partial<AppSettings>): AppSettings {
     return {
@@ -131,7 +141,7 @@
   }
 
   async function ensureActiveFile(root: string): Promise<string> {
-    let currentFiles = await listMarkdownFiles(root, settings.activeFilePath);
+    const currentFiles = await listMarkdownFiles(root, settings.activeFilePath);
 
     if (settings.dailyFile.enabled) {
       const name = todayFileName();
@@ -139,8 +149,7 @@
       if (existing) {
         return existing.path;
       }
-      const created = await createMarkdownFile(root, name, DEFAULT_MARKDOWN);
-      return created.path;
+      return (await createMarkdownFile(root, name, DEFAULT_MARKDOWN)).path;
     }
 
     if (settings.activeFilePath && currentFiles.some((file) => file.path === settings.activeFilePath)) {
@@ -151,8 +160,7 @@
       return currentFiles[0].path;
     }
 
-    const created = await createMarkdownFile(root, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN);
-    return created.path;
+    return (await createMarkdownFile(root, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN)).path;
   }
 
   async function openWorkspace(root: string): Promise<void> {
@@ -188,12 +196,14 @@
     if (path === settings.activeFilePath) {
       return;
     }
+    await syncReadableEditor();
     await flushSave();
     try {
       content = await readMarkdownFile(path);
       dirty = false;
       await persistSettings(cloneSettings({ activeFilePath: path }));
       await refreshFiles();
+      await refreshImages();
     } catch (error) {
       setError(error);
     }
@@ -205,6 +215,7 @@
     }
     const trimmed = newFileName.trim();
     const name = trimmed.endsWith('.md') ? trimmed : `${trimmed || todayFileName()}.md`;
+    await syncReadableEditor();
     await flushSave();
     try {
       const created = await createMarkdownFile(settings.workspaceRoot, name, DEFAULT_MARKDOWN);
@@ -214,6 +225,7 @@
       await persistSettings(cloneSettings({ activeFilePath: created.path }));
       await refreshFiles();
       await refreshImages();
+      sidebarOpen = true;
     } catch (error) {
       setError(error);
     }
@@ -232,6 +244,7 @@
   }
 
   async function toggleDailyFile(): Promise<void> {
+    await syncReadableEditor();
     await flushSave();
     await persistSettings(cloneSettings({ dailyFile: { ...settings.dailyFile, enabled: !settings.dailyFile.enabled } }));
     if (settings.workspaceRoot) {
@@ -258,12 +271,142 @@
     }
   }
 
-  function insertInterruptedTask(): void {
-    content = `${content.trimEnd()}\n${interruptionTemplate()}`;
+  function updateContent(next: string): void {
+    content = next;
     scheduleSave();
   }
 
+  function insertMarkdown(markdown: string): void {
+    content = `${content.trimEnd()}\n\n${markdown}\n`;
+    scheduleSave();
+  }
+
+  function insertInterruptedTask(): void {
+    insertMarkdown(interruptionTemplate().trim());
+  }
+
+  function extensionFromMime(type: string): string {
+    if (type.includes('jpeg')) return 'jpg';
+    if (type.includes('gif')) return 'gif';
+    if (type.includes('webp')) return 'webp';
+    return 'png';
+  }
+
+  async function handlePaste(event: ClipboardEvent): Promise<void> {
+    if (!settings.activeFilePath || !event.clipboardData) {
+      return;
+    }
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith('image/'));
+    if (!imageItem) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      const file = imageItem.getAsFile();
+      if (!file) {
+        return;
+      }
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const relativePath = await savePastedImage(settings.activeFilePath, bytes, extensionFromMime(file.type));
+      insertMarkdown(`![](${relativePath})`);
+      await flushSave();
+      await refreshImages();
+    } catch (error) {
+      setError(error);
+    }
+  }
+
+  function normalizeInlineText(value: string): string {
+    return value.replace(/\u00a0/g, ' ').replace(/\s+\n/g, '\n').trim();
+  }
+
+  function blockToMarkdown(element: Element): string {
+    const tag = element.tagName.toLowerCase();
+    const textValue = normalizeInlineText(element.textContent ?? '');
+
+    if (!textValue && tag !== 'hr') {
+      return '';
+    }
+    if (/h[1-6]/.test(tag)) {
+      return `${'#'.repeat(Number(tag[1]))} ${textValue}`;
+    }
+    if (tag === 'blockquote') {
+      return textValue
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+    }
+    if (tag === 'pre') {
+      return `\`\`\`\n${element.textContent ?? ''}\n\`\`\``;
+    }
+    if (tag === 'ul' || tag === 'ol') {
+      return Array.from(element.children)
+        .filter((child) => child.tagName.toLowerCase() === 'li')
+        .map((child, index) => {
+          const input = child.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+          const prefix = tag === 'ol' ? `${index + 1}.` : input ? `- [${input.checked ? 'x' : ' '}]` : '-';
+          const childText = normalizeInlineText((child.textContent ?? '').replace(/^\s*[☐☑]?\s*/, ''));
+          return `${prefix} ${childText}`;
+        })
+        .join('\n');
+    }
+    if (tag === 'hr') {
+      return '---';
+    }
+    return textValue;
+  }
+
+  function readableHtmlToMarkdown(host: HTMLElement): string {
+    return Array.from(host.children)
+      .map(blockToMarkdown)
+      .filter(Boolean)
+      .join('\n\n')
+      .trimEnd();
+  }
+
+  async function syncReadableEditor(): Promise<void> {
+    if (sourceMode || !readableHost || !settings.activeFilePath) {
+      return;
+    }
+    const next = readableHtmlToMarkdown(readableHost);
+    if (next && next !== content) {
+      content = next;
+      scheduleSave();
+    }
+  }
+
+  function scheduleReadableSync(): void {
+    dirty = true;
+    if (readableSyncTimer) {
+      clearTimeout(readableSyncTimer);
+    }
+    readableSyncTimer = setTimeout(() => {
+      readableSyncTimer = null;
+      void syncReadableEditor().then(flushSave);
+    }, AUTOSAVE_DELAY_MS);
+  }
+
+  async function toggleSourceMode(): Promise<void> {
+    if (!sourceMode) {
+      await syncReadableEditor();
+    }
+    sourceMode = !sourceMode;
+  }
+
+  function revealScrollbars(): void {
+    scrollVisible = true;
+    if (scrollTimer) {
+      clearTimeout(scrollTimer);
+    }
+    scrollTimer = setTimeout(() => {
+      scrollVisible = false;
+    }, 3000);
+  }
+
   async function loadApp(): Promise<void> {
+    applyTheme(settings.theme);
+
     if (!isTauriRuntime) {
       loading = false;
       desktopPreview = true;
@@ -287,54 +430,66 @@
     }
   }
 
-  function updateContent(next: string): void {
-    content = next;
-    scheduleSave();
-  }
-
   onMount(() => {
     void loadApp();
 
     const beforeUnload = () => {
-      if (settings.activeFilePath && dirty) {
-        void flushSave();
-      }
+      void syncReadableEditor().then(flushSave);
     };
     window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('beforeunload', beforeUnload);
+      window.removeEventListener('paste', handlePaste);
+      if (scrollTimer) {
+        clearTimeout(scrollTimer);
+      }
+      if (readableSyncTimer) {
+        clearTimeout(readableSyncTimer);
+      }
+    };
   });
 </script>
 
-<main class="app-shell">
+<main class:scroll-visible={scrollVisible} class="app-shell" onmousemove={revealScrollbars} onwheel={revealScrollbars}>
   <header class="titlebar" data-tauri-drag-region>
-    <div class="identity">
-      <div class="mark">TP</div>
-      <div>
-        <h1>TopPlan</h1>
-        <p>{activeFile?.name ?? text.subtitle}</p>
+    <div class="identity" data-tauri-drag-region>
+      <div class="mark" data-tauri-drag-region>TP</div>
+      <div class="identity-copy" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>TopPlan</h1>
+        <p data-tauri-drag-region>{activeFile?.name ?? text.subtitle}</p>
       </div>
     </div>
 
     <div class="window-actions">
-      <button class="language-button" title={settings.language === 'zh' ? text.switchToEnglish : text.switchToChinese} onclick={toggleLanguage}>
-        {settings.language === 'zh' ? 'EN' : '中'}
+      <button class="icon-button text-button" title={settings.language === 'zh' ? text.switchToEnglish : text.switchToChinese} onclick={toggleLanguage}>
+        <Languages size={14} />
+      </button>
+      <button class="icon-button" title={text.refreshImageIndex} onclick={refreshImages}>
+        <RefreshCw size={14} />
+      </button>
+      <button class="icon-button" title={text.settings} onclick={() => (showSettings = !showSettings)}>
+        <Settings size={14} />
       </button>
       <button class="icon-button" title={settings.window.alwaysOnTop ? text.disableTopmost : text.enableTopmost} onclick={toggleTopmost}>
         {#if settings.window.alwaysOnTop}
-          <Pin size={17} />
+          <Pin size={14} />
         {:else}
-          <PinOff size={17} />
+          <PinOff size={14} />
         {/if}
       </button>
+      <button class="icon-button" title={text.minimizeWindow} onclick={minimizeWindow}>
+        <Minus size={14} />
+      </button>
       <button class="icon-button" title={text.hideWindow} onclick={hideWindow}>
-        <Minimize2 size={17} />
+        <SquareChevronDown size={14} />
       </button>
     </div>
   </header>
 
   {#if errorMessage || desktopPreview}
     <section class="notice">
-      <TriangleAlert size={16} />
+      <TriangleAlert size={15} />
       <span>{errorMessage || text.desktopOnly}</span>
     </section>
   {/if}
@@ -350,96 +505,92 @@
       <h2>{text.selectDataFolder}</h2>
       <p>{text.selectDataFolderHint}</p>
       <button class="primary-button" onclick={chooseWorkspace}>
-        <FolderOpen size={17} />
+        <FolderOpen size={16} />
         {text.selectFolder}
       </button>
     </section>
   {:else}
-    <section class="workspace-bar">
-      <button class="path-button" onclick={chooseWorkspace} title={settings.workspaceRoot}>
-        <FolderOpen size={15} />
-        <span>{settings.workspaceRoot}</span>
-      </button>
-      <div class="save-state" class:dirty>
-        <Save size={14} />
-        {saving ? text.saving : dirty ? text.unsaved : text.saved}
-      </div>
-    </section>
-
-    <section class="toolbar">
-      <div class="segmented" aria-label="View mode">
-        <button class:active={viewMode === 'edit'} title={text.edit} onclick={() => (viewMode = 'edit')}>
-          <Pencil size={16} />
-        </button>
-        <button class:active={viewMode === 'preview'} title={text.preview} onclick={() => (viewMode = 'preview')}>
-          <Eye size={16} />
-        </button>
-        <button class:active={viewMode === 'split'} title={text.splitView} onclick={() => (viewMode = 'split')}>
-          <Columns2 size={16} />
-        </button>
-      </div>
-      <button class="tool-button" onclick={insertInterruptedTask}>
-        <Clock size={16} />
-        {text.interrupted}
-      </button>
-      <button class="icon-button" title={text.refreshImageIndex} onclick={refreshImages}>
-        <RefreshCw size={16} />
-      </button>
-      <button class="icon-button" title={text.settings} onclick={() => (showSettings = !showSettings)}>
-        <Settings size={16} />
-      </button>
-    </section>
-
-    <section class="content-layout">
-      <aside class="file-rail">
-        <div class="file-create">
-          <input bind:value={newFileName} placeholder={text.newFile} aria-label={text.newFileAria} />
-          <button class="icon-button" title={text.createFile} onclick={createFile}>
-            <FilePlus size={16} />
-          </button>
-        </div>
-        <div class="file-list">
-          {#each files as file}
-            <button class:active={file.path === settings.activeFilePath} onclick={() => switchFile(file.path)} title={file.path}>
-              <FileText size={15} />
-              <span>{file.name}</span>
+    <section class:sidebar-open={sidebarOpen} class="workspace-main">
+      {#if sidebarOpen}
+        <aside class="file-sidebar">
+          <div class="file-create">
+            <input bind:value={newFileName} placeholder={text.newFile} aria-label={text.newFileAria} />
+            <button class="icon-button" title={text.createFile} onclick={createFile}>
+              <FilePlus size={15} />
             </button>
-          {/each}
-        </div>
-      </aside>
-
-      <section class:split-pane={viewMode === 'split'} class="editor-area">
-        {#if viewMode === 'edit' || viewMode === 'split'}
-          <div class="pane editor-pane">
-            <CodeMirrorEditor value={content} onChange={updateContent} />
           </div>
-        {/if}
-        {#if viewMode === 'preview' || viewMode === 'split'}
-          <article class="pane preview-pane">
+          <div class="file-list">
+            {#each files as file}
+              <button class:active={file.path === settings.activeFilePath} onclick={() => switchFile(file.path)} title={file.path}>
+                <FileText size={14} />
+                <span>{file.name}</span>
+              </button>
+            {/each}
+          </div>
+        </aside>
+      {/if}
+
+      <section class="document-surface" onscroll={revealScrollbars}>
+        {#if sourceMode}
+          <CodeMirrorEditor value={content} onChange={updateContent} />
+        {:else}
+          <article
+            bind:this={readableHost}
+            class="readable-editor"
+            contenteditable="true"
+            spellcheck="false"
+            onblur={syncReadableEditor}
+            oninput={scheduleReadableSync}
+          >
             {@html rendered}
           </article>
         {/if}
       </section>
     </section>
 
-    <section class="status-dock">
-      <div class="status-item">
-        <Image size={14} />
-        {images.length} {text.images}
+    <footer class="bottom-bar">
+      <div class="bottom-left">
+        <button class:active={sidebarOpen} class="bottom-icon" title={sidebarOpen ? text.hideSidebar : text.showSidebar} onclick={() => (sidebarOpen = !sidebarOpen)}>
+          {#if sidebarOpen}
+            <PanelLeftClose size={15} />
+          {:else}
+            <PanelLeftOpen size={15} />
+          {/if}
+        </button>
+        <button class:active={sourceMode} class="bottom-icon" title={sourceMode ? text.readingMode : text.sourceMode} onclick={toggleSourceMode}>
+          <Code2 size={15} />
+        </button>
+        <button class="bottom-icon" title={text.interrupted} onclick={insertInterruptedTask}>
+          <Clock size={15} />
+        </button>
       </div>
-      <div class:warn={missingImages.length > 0} class="status-item">
-        <TriangleAlert size={14} />
-        {missingImages.length} {text.missing}
+
+      <div class="bottom-status">
+        <span class:dirty>{saving ? text.saving : dirty ? text.unsaved : text.saved}</span>
+        <span><Image size={13} /> {images.length}</span>
+        {#if missingImages.length > 0}
+          <span class="warn"><TriangleAlert size={13} /> {missingImages.length}</span>
+        {/if}
+        {#if externalImages.length > 0}
+          <span>{externalImages.length} {text.external}</span>
+        {/if}
+        <span>{wordCount} {text.words}</span>
       </div>
-      <div class="status-item">{externalImages.length} {text.external}</div>
-    </section>
+    </footer>
 
     {#if showSettings}
-      <aside class="settings-panel">
+      <aside class="settings-popover">
         <div class="settings-head">
           <h2>{text.settings}</h2>
-          <button class="icon-button" title={text.closeSettings} onclick={() => (showSettings = false)}>×</button>
+          <button class="icon-button" title={text.closeSettings} onclick={() => (showSettings = false)}>
+            <X size={14} />
+          </button>
         </div>
+
+        <button class="setting-command" onclick={chooseWorkspace}>
+          <FolderOpen size={15} />
+          <span>{text.chooseAnotherFolder}</span>
+        </button>
 
         <label class="setting-row">
           <span>{text.dailyFile}</span>
