@@ -12,7 +12,6 @@ dist
 dist-ssr
 src-tauri/target
 src-tauri/gen
-src-tauri/icons
 *.msi
 *.exe
 *.nsis.zip
