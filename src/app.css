@@ -120,6 +120,10 @@ button {
   user-select: none;
 }
 
+.titlebar [data-tauri-drag-region] {
+  cursor: move;
+}
+
 .identity {
   display: flex;
   min-width: 0;
@@ -361,6 +365,7 @@ button {
   font-size: 17px;
   line-height: 1.72;
   word-break: break-word;
+  user-select: text;
 }
 
 .readable-editor:focus {
@@ -391,6 +396,13 @@ button {
   font-weight: 720;
 }
 
+.readable-editor h4,
+.readable-editor h5,
+.readable-editor h6 {
+  font-size: 1.04em;
+  font-weight: 720;
+}
+
 .readable-editor h1:first-child,
 .readable-editor h2:first-child,
 .readable-editor h3:first-child {
@@ -405,6 +417,15 @@ button {
 .readable-editor ol {
   margin: 0.35em 0 1.2em;
   padding-left: 1.7em;
+}
+
+.readable-editor .contains-task-list,
+.readable-editor .task-list-item {
+  list-style: none;
+}
+
+.readable-editor .contains-task-list {
+  padding-left: 0.72em;
 }
 
 .readable-editor li {
@@ -654,6 +675,18 @@ button {
 
 .cm-scroller {
   font-family: "Cascadia Code", Consolas, monospace !important;
+}
+
+.cm-editor,
+.cm-content,
+.cm-line {
+  user-select: text;
+}
+
+.cm-editor.cm-focused .cm-selectionBackground,
+.cm-selectionBackground,
+.cm-content ::selection {
+  background: rgba(72, 168, 255, 0.26) !important;
 }
 
 @media (max-width: 560px) {

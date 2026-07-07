@@ -83,6 +83,11 @@ export async function minimizeWindow(): Promise<void> {
   await getCurrentWindow().minimize();
 }
 
+export async function startWindowDrag(): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().startDragging();
+}
+
 export async function toggleMainWindow(): Promise<void> {
   requireTauri();
   await invoke('toggle_main_window');

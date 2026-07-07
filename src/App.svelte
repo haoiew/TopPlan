@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     Clock,
     Code2,
@@ -37,6 +37,7 @@
     scanImageReferences,
     selectWorkspaceDir,
     setAlwaysOnTop,
+    startWindowDrag,
     toggleMainWindow,
     writeMarkdownFile,
   } from './lib/tauriClient';
@@ -58,9 +59,8 @@
   let newFileName = '';
   let scrollVisible = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  let readableSyncTimer: ReturnType<typeof setTimeout> | null = null;
   let scrollTimer: ReturnType<typeof setTimeout> | null = null;
-  let readableHost: HTMLElement | null = null;
+  let sourceEditor: { insertText: (text: string) => void } | null = null;
 
   $: activeFile = files.find((file) => file.path === settings.activeFilePath) ?? null;
   $: missingImages = images.filter((item) => item.status === 'missing');
@@ -196,7 +196,6 @@
     if (path === settings.activeFilePath) {
       return;
     }
-    await syncReadableEditor();
     await flushSave();
     try {
       content = await readMarkdownFile(path);
@@ -215,7 +214,6 @@
     }
     const trimmed = newFileName.trim();
     const name = trimmed.endsWith('.md') ? trimmed : `${trimmed || todayFileName()}.md`;
-    await syncReadableEditor();
     await flushSave();
     try {
       const created = await createMarkdownFile(settings.workspaceRoot, name, DEFAULT_MARKDOWN);
@@ -244,7 +242,6 @@
   }
 
   async function toggleDailyFile(): Promise<void> {
-    await syncReadableEditor();
     await flushSave();
     await persistSettings(cloneSettings({ dailyFile: { ...settings.dailyFile, enabled: !settings.dailyFile.enabled } }));
     if (settings.workspaceRoot) {
@@ -277,8 +274,13 @@
   }
 
   function insertMarkdown(markdown: string): void {
-    content = `${content.trimEnd()}\n\n${markdown}\n`;
-    scheduleSave();
+    const text = `\n\n${markdown}\n`;
+    if (sourceMode && sourceEditor) {
+      sourceEditor.insertText(text);
+    } else {
+      content = `${content.trimEnd()}${text}`;
+      scheduleSave();
+    }
   }
 
   function insertInterruptedTask(): void {
@@ -310,6 +312,7 @@
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
       const relativePath = await savePastedImage(settings.activeFilePath, bytes, extensionFromMime(file.type));
       insertMarkdown(`![](${relativePath})`);
+      await tick();
       await flushSave();
       await refreshImages();
     } catch (error) {
@@ -317,81 +320,23 @@
     }
   }
 
-  function normalizeInlineText(value: string): string {
-    return value.replace(/\u00a0/g, ' ').replace(/\s+\n/g, '\n').trim();
+  async function toggleSourceMode(): Promise<void> {
+    sourceMode = !sourceMode;
   }
 
-  function blockToMarkdown(element: Element): string {
-    const tag = element.tagName.toLowerCase();
-    const textValue = normalizeInlineText(element.textContent ?? '');
-
-    if (!textValue && tag !== 'hr') {
-      return '';
-    }
-    if (/h[1-6]/.test(tag)) {
-      return `${'#'.repeat(Number(tag[1]))} ${textValue}`;
-    }
-    if (tag === 'blockquote') {
-      return textValue
-        .split('\n')
-        .map((line) => `> ${line}`)
-        .join('\n');
-    }
-    if (tag === 'pre') {
-      return `\`\`\`\n${element.textContent ?? ''}\n\`\`\``;
-    }
-    if (tag === 'ul' || tag === 'ol') {
-      return Array.from(element.children)
-        .filter((child) => child.tagName.toLowerCase() === 'li')
-        .map((child, index) => {
-          const input = child.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
-          const prefix = tag === 'ol' ? `${index + 1}.` : input ? `- [${input.checked ? 'x' : ' '}]` : '-';
-          const childText = normalizeInlineText((child.textContent ?? '').replace(/^\s*[☐☑]?\s*/, ''));
-          return `${prefix} ${childText}`;
-        })
-        .join('\n');
-    }
-    if (tag === 'hr') {
-      return '---';
-    }
-    return textValue;
-  }
-
-  function readableHtmlToMarkdown(host: HTMLElement): string {
-    return Array.from(host.children)
-      .map(blockToMarkdown)
-      .filter(Boolean)
-      .join('\n\n')
-      .trimEnd();
-  }
-
-  async function syncReadableEditor(): Promise<void> {
-    if (sourceMode || !readableHost || !settings.activeFilePath) {
+  async function handleTitlePointerDown(event: PointerEvent): Promise<void> {
+    if (event.button !== 0 || !isTauriRuntime) {
       return;
     }
-    const next = readableHtmlToMarkdown(readableHost);
-    if (next && next !== content) {
-      content = next;
-      scheduleSave();
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, select, textarea, a')) {
+      return;
     }
-  }
-
-  function scheduleReadableSync(): void {
-    dirty = true;
-    if (readableSyncTimer) {
-      clearTimeout(readableSyncTimer);
+    try {
+      await startWindowDrag();
+    } catch {
+      // The native data-tauri-drag-region attribute remains as fallback.
     }
-    readableSyncTimer = setTimeout(() => {
-      readableSyncTimer = null;
-      void syncReadableEditor().then(flushSave);
-    }, AUTOSAVE_DELAY_MS);
-  }
-
-  async function toggleSourceMode(): Promise<void> {
-    if (!sourceMode) {
-      await syncReadableEditor();
-    }
-    sourceMode = !sourceMode;
   }
 
   function revealScrollbars(): void {
@@ -434,7 +379,7 @@
     void loadApp();
 
     const beforeUnload = () => {
-      void syncReadableEditor().then(flushSave);
+      void flushSave();
     };
     window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('paste', handlePaste);
@@ -444,15 +389,12 @@
       if (scrollTimer) {
         clearTimeout(scrollTimer);
       }
-      if (readableSyncTimer) {
-        clearTimeout(readableSyncTimer);
-      }
     };
   });
 </script>
 
 <main class:scroll-visible={scrollVisible} class="app-shell" onmousemove={revealScrollbars} onwheel={revealScrollbars}>
-  <header class="titlebar" data-tauri-drag-region>
+  <header class="titlebar" role="toolbar" aria-label="TopPlan window controls" tabindex="-1" data-tauri-drag-region onpointerdown={handleTitlePointerDown}>
     <div class="identity" data-tauri-drag-region>
       <div class="mark" data-tauri-drag-region>TP</div>
       <div class="identity-copy" data-tauri-drag-region>
@@ -532,15 +474,12 @@
 
       <section class="document-surface" onscroll={revealScrollbars}>
         {#if sourceMode}
-          <CodeMirrorEditor value={content} onChange={updateContent} />
+          <CodeMirrorEditor bind:this={sourceEditor} value={content} onChange={updateContent} />
         {:else}
           <article
-            bind:this={readableHost}
             class="readable-editor"
-            contenteditable="true"
-            spellcheck="false"
-            onblur={syncReadableEditor}
-            oninput={scheduleReadableSync}
+            ondblclick={() => (sourceMode = true)}
+            title={text.doubleClickToEdit}
           >
             {@html rendered}
           </article>

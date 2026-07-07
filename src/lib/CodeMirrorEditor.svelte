@@ -77,6 +77,19 @@
     ];
   }
 
+  export function insertText(text: string): void {
+    if (!view) {
+      return;
+    }
+    const selection = view.state.selection.main;
+    view.dispatch({
+      changes: { from: selection.from, to: selection.to, insert: text },
+      selection: { anchor: selection.from + text.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+  }
+
   onMount(() => {
     view = new EditorView({
       state: EditorState.create({
@@ -103,4 +116,3 @@
 </script>
 
 <div bind:this={host} class="editor-host" aria-label="Markdown editor"></div>
-
