@@ -36,7 +36,8 @@
     toggleMainWindow,
     writeMarkdownFile,
   } from './lib/tauriClient';
-  import type { AppSettings, ImageReference, PlanFile, ThemeMode, ViewMode } from './types';
+  import { TEXT } from './lib/i18n';
+  import type { AppSettings, ImageReference, LanguageMode, PlanFile, ThemeMode, ViewMode } from './types';
 
   let settings: AppSettings = structuredClone(DEFAULT_SETTINGS);
   let files: PlanFile[] = [];
@@ -47,6 +48,7 @@
   let saving = false;
   let dirty = false;
   let showSettings = false;
+  let desktopPreview = false;
   let errorMessage = '';
   let newFileName = '';
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -55,6 +57,7 @@
   $: missingImages = images.filter((item) => item.status === 'missing');
   $: externalImages = images.filter((item) => item.status === 'external');
   $: rendered = renderMarkdown(content, settings.activeFilePath, images);
+  $: text = TEXT[settings.language] ?? TEXT.zh;
 
   function cloneSettings(next: Partial<AppSettings>): AppSettings {
     return {
@@ -220,6 +223,14 @@
     await persistSettings(cloneSettings({ theme }));
   }
 
+  async function setLanguage(language: LanguageMode): Promise<void> {
+    await persistSettings(cloneSettings({ language }));
+  }
+
+  async function toggleLanguage(): Promise<void> {
+    await setLanguage(settings.language === 'zh' ? 'en' : 'zh');
+  }
+
   async function toggleDailyFile(): Promise<void> {
     await flushSave();
     await persistSettings(cloneSettings({ dailyFile: { ...settings.dailyFile, enabled: !settings.dailyFile.enabled } }));
@@ -255,7 +266,7 @@
   async function loadApp(): Promise<void> {
     if (!isTauriRuntime) {
       loading = false;
-      errorMessage = 'Run TopPlan with `pnpm tauri dev` to access local files and desktop controls.';
+      desktopPreview = true;
       return;
     }
 
@@ -300,44 +311,47 @@
       <div class="mark">TP</div>
       <div>
         <h1>TopPlan</h1>
-        <p>{activeFile?.name ?? 'Local Markdown planner'}</p>
+        <p>{activeFile?.name ?? text.subtitle}</p>
       </div>
     </div>
 
     <div class="window-actions">
-      <button class="icon-button" title={settings.window.alwaysOnTop ? 'Disable always on top' : 'Keep always on top'} onclick={toggleTopmost}>
+      <button class="language-button" title={settings.language === 'zh' ? text.switchToEnglish : text.switchToChinese} onclick={toggleLanguage}>
+        {settings.language === 'zh' ? 'EN' : '中'}
+      </button>
+      <button class="icon-button" title={settings.window.alwaysOnTop ? text.disableTopmost : text.enableTopmost} onclick={toggleTopmost}>
         {#if settings.window.alwaysOnTop}
           <Pin size={17} />
         {:else}
           <PinOff size={17} />
         {/if}
       </button>
-      <button class="icon-button" title="Hide window" onclick={hideWindow}>
+      <button class="icon-button" title={text.hideWindow} onclick={hideWindow}>
         <Minimize2 size={17} />
       </button>
     </div>
   </header>
 
-  {#if errorMessage}
+  {#if errorMessage || desktopPreview}
     <section class="notice">
       <TriangleAlert size={16} />
-      <span>{errorMessage}</span>
+      <span>{errorMessage || text.desktopOnly}</span>
     </section>
   {/if}
 
   {#if loading}
     <section class="empty-state">
       <RefreshCw size={22} />
-      <h2>Loading workspace</h2>
+      <h2>{text.loadingWorkspace}</h2>
     </section>
   {:else if !settings.workspaceRoot}
     <section class="empty-state">
       <FolderOpen size={30} />
-      <h2>Select a data folder</h2>
-      <p>Choose an empty folder or an existing Markdown folder. TopPlan reads local files directly.</p>
+      <h2>{text.selectDataFolder}</h2>
+      <p>{text.selectDataFolderHint}</p>
       <button class="primary-button" onclick={chooseWorkspace}>
         <FolderOpen size={17} />
-        Select folder
+        {text.selectFolder}
       </button>
     </section>
   {:else}
@@ -348,30 +362,30 @@
       </button>
       <div class="save-state" class:dirty>
         <Save size={14} />
-        {saving ? 'Saving' : dirty ? 'Unsaved' : 'Saved'}
+        {saving ? text.saving : dirty ? text.unsaved : text.saved}
       </div>
     </section>
 
     <section class="toolbar">
       <div class="segmented" aria-label="View mode">
-        <button class:active={viewMode === 'edit'} title="Edit" onclick={() => (viewMode = 'edit')}>
+        <button class:active={viewMode === 'edit'} title={text.edit} onclick={() => (viewMode = 'edit')}>
           <Pencil size={16} />
         </button>
-        <button class:active={viewMode === 'preview'} title="Preview" onclick={() => (viewMode = 'preview')}>
+        <button class:active={viewMode === 'preview'} title={text.preview} onclick={() => (viewMode = 'preview')}>
           <Eye size={16} />
         </button>
-        <button class:active={viewMode === 'split'} title="Split view" onclick={() => (viewMode = 'split')}>
+        <button class:active={viewMode === 'split'} title={text.splitView} onclick={() => (viewMode = 'split')}>
           <Columns2 size={16} />
         </button>
       </div>
       <button class="tool-button" onclick={insertInterruptedTask}>
         <Clock size={16} />
-        Interrupted
+        {text.interrupted}
       </button>
-      <button class="icon-button" title="Refresh image index" onclick={refreshImages}>
+      <button class="icon-button" title={text.refreshImageIndex} onclick={refreshImages}>
         <RefreshCw size={16} />
       </button>
-      <button class="icon-button" title="Settings" onclick={() => (showSettings = !showSettings)}>
+      <button class="icon-button" title={text.settings} onclick={() => (showSettings = !showSettings)}>
         <Settings size={16} />
       </button>
     </section>
@@ -379,8 +393,8 @@
     <section class="content-layout">
       <aside class="file-rail">
         <div class="file-create">
-          <input bind:value={newFileName} placeholder="New file.md" aria-label="New markdown file name" />
-          <button class="icon-button" title="Create file" onclick={createFile}>
+          <input bind:value={newFileName} placeholder={text.newFile} aria-label={text.newFileAria} />
+          <button class="icon-button" title={text.createFile} onclick={createFile}>
             <FilePlus size={16} />
           </button>
         </div>
@@ -411,44 +425,52 @@
     <section class="status-dock">
       <div class="status-item">
         <Image size={14} />
-        {images.length} images
+        {images.length} {text.images}
       </div>
       <div class:warn={missingImages.length > 0} class="status-item">
         <TriangleAlert size={14} />
-        {missingImages.length} missing
+        {missingImages.length} {text.missing}
       </div>
-      <div class="status-item">{externalImages.length} external</div>
+      <div class="status-item">{externalImages.length} {text.external}</div>
     </section>
 
     {#if showSettings}
       <aside class="settings-panel">
         <div class="settings-head">
-          <h2>Settings</h2>
-          <button class="icon-button" title="Close settings" onclick={() => (showSettings = false)}>×</button>
+          <h2>{text.settings}</h2>
+          <button class="icon-button" title={text.closeSettings} onclick={() => (showSettings = false)}>×</button>
         </div>
 
         <label class="setting-row">
-          <span>Daily file</span>
+          <span>{text.dailyFile}</span>
           <input type="checkbox" checked={settings.dailyFile.enabled} onchange={toggleDailyFile} />
         </label>
 
         <label class="setting-row">
-          <span>Autostart</span>
+          <span>{text.autostart}</span>
           <input type="checkbox" checked={settings.autoStart} onchange={toggleAutostart} />
         </label>
 
         <label class="setting-row">
-          <span>Hotkey</span>
+          <span>{text.hotkey}</span>
           <input value={settings.hotkey} readonly />
         </label>
 
+        <label class="setting-row">
+          <span>{text.language}</span>
+          <select value={settings.language} onchange={(event) => setLanguage(event.currentTarget.value as LanguageMode)}>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+
+        <div class="setting-label">{text.theme}</div>
         <div class="theme-row">
-          <button class:active={settings.theme === 'system'} onclick={() => setTheme('system')}>System</button>
-          <button class:active={settings.theme === 'light'} onclick={() => setTheme('light')}>Light</button>
-          <button class:active={settings.theme === 'dark'} onclick={() => setTheme('dark')}>Dark</button>
+          <button class:active={settings.theme === 'system'} onclick={() => setTheme('system')}>{text.system}</button>
+          <button class:active={settings.theme === 'light'} onclick={() => setTheme('light')}>{text.light}</button>
+          <button class:active={settings.theme === 'dark'} onclick={() => setTheme('dark')}>{text.dark}</button>
         </div>
       </aside>
     {/if}
   {/if}
 </main>
-

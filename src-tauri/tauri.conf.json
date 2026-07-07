@@ -20,6 +20,7 @@
         "y": 0,
         "resizable": true,
         "decorations": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "visible": true
       }
@@ -34,4 +35,3 @@
     "icon": []
   }
 }
-

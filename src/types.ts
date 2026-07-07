@@ -1,4 +1,5 @@
 export type ThemeMode = 'system' | 'light' | 'dark';
+export type LanguageMode = 'zh' | 'en';
 export type ViewMode = 'edit' | 'preview' | 'split';
 export type ImageStatus = 'ok' | 'missing' | 'external';
 
@@ -19,6 +20,7 @@ export interface AppSettings {
     pattern: 'YYYY-MM-DD.md';
   };
   theme: ThemeMode;
+  language: LanguageMode;
 }
 
 export interface PlanFile {
@@ -42,4 +44,3 @@ export interface WorkspaceSnapshot {
   content: string;
   images: ImageReference[];
 }
-

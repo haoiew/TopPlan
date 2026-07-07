@@ -6,12 +6,12 @@ export const DEFAULT_HOTKEY = 'Ctrl+Alt+Space';
 
 export const DEFAULT_MARKDOWN = `# TopPlan
 
-## Today
+## 今日计划
 - [ ] 
 
-## Interrupted
+## 被打断任务
 
-## Notes
+## 临时记录
 `;
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -30,7 +30,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     pattern: 'YYYY-MM-DD.md',
   },
-  theme: 'system',
+  theme: 'light',
+  language: 'zh',
 };
 
 export function todayFileName(date = new Date()): string {
@@ -43,6 +44,5 @@ export function todayFileName(date = new Date()): string {
 export function interruptionTemplate(date = new Date()): string {
   const hour = `${date.getHours()}`.padStart(2, '0');
   const minute = `${date.getMinutes()}`.padStart(2, '0');
-  return `\n- [ ] ${hour}:${minute} Interrupted: \n  - Done:\n  - Next:\n`;
+  return `\n- [ ] ${hour}:${minute} 被打断：\n  - 已完成：\n  - 下一步：\n`;
 }
-

@@ -33,13 +33,22 @@ pub struct DailyFileSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default)]
     pub workspace_root: Option<String>,
+    #[serde(default)]
     pub active_file_path: Option<String>,
+    #[serde(default = "default_window_settings")]
     pub window: WindowSettings,
+    #[serde(default = "default_hotkey")]
     pub hotkey: String,
+    #[serde(default)]
     pub auto_start: bool,
+    #[serde(default = "default_daily_file_settings")]
     pub daily_file: DailyFileSettings,
+    #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,25 +71,46 @@ pub struct ImageReference {
     pub status: String,
 }
 
+fn default_window_settings() -> WindowSettings {
+    WindowSettings {
+        x: 0,
+        y: 0,
+        width: 420,
+        height: 640,
+        always_on_top: true,
+    }
+}
+
+fn default_daily_file_settings() -> DailyFileSettings {
+    DailyFileSettings {
+        enabled: false,
+        pattern: "YYYY-MM-DD.md".to_string(),
+    }
+}
+
+fn default_hotkey() -> String {
+    DEFAULT_HOTKEY.to_string()
+}
+
+fn default_theme() -> String {
+    "light".to_string()
+}
+
+fn default_language() -> String {
+    "zh".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             workspace_root: None,
             active_file_path: None,
-            window: WindowSettings {
-                x: 0,
-                y: 0,
-                width: 420,
-                height: 640,
-                always_on_top: true,
-            },
-            hotkey: DEFAULT_HOTKEY.to_string(),
+            window: default_window_settings(),
+            hotkey: default_hotkey(),
             auto_start: false,
-            daily_file: DailyFileSettings {
-                enabled: false,
-                pattern: "YYYY-MM-DD.md".to_string(),
-            },
-            theme: "system".to_string(),
+            daily_file: default_daily_file_settings(),
+            theme: default_theme(),
+            language: default_language(),
         }
     }
 }
@@ -401,4 +431,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running TopPlan");
 }
-

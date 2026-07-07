@@ -39,10 +39,10 @@ Use the project environment tools directly:
 Tauri Windows builds also require Rust and Microsoft C++ Build Tools.
 
 - WebView2 Runtime: detected on this machine.
-- Rust toolchain: not detected. `winget install --source winget --id Rustlang.Rustup -e --silent` downloaded Rustup but stalled inside `rustup-init.exe`, so Rust remains a manual prerequisite.
-- Microsoft C++ Build Tools: not detected by `vswhere`.
+- Rust toolchain: detected after running the downloaded `rustup-init.exe` directly.
+- Microsoft C++ Build Tools: not detected by `vswhere`; this is still required before `pnpm tauri dev` or `pnpm tauri build`.
 
-Install those before running Tauri build/dev commands:
+Verify Rust and install Microsoft C++ Build Tools before running Tauri build/dev commands:
 
 ```powershell
 rustup default stable
@@ -81,4 +81,3 @@ pnpm tauri build
   2. Workspace root
   3. Absolute path
 - `.topplan/image-index.json` is rebuildable and should not be treated as source data.
-
