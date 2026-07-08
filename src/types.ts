@@ -19,6 +19,10 @@ export interface AppSettings {
     enabled: boolean;
     pattern: 'YYYY-MM-DD.md';
   };
+  miniNote: {
+    opacity: number;
+    backgroundColor: string;
+  };
   theme: ThemeMode;
   language: LanguageMode;
 }
@@ -37,6 +41,7 @@ export interface ImageReference {
   rawPath: string;
   resolvedPath: string | null;
   status: ImageStatus;
+  dataUrl?: string;
 }
 
 export interface WorkspaceSnapshot {

@@ -1,48 +1,87 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    Clock,
     Code2,
     FilePlus,
     FileText,
     FolderOpen,
     Image,
-    Languages,
+    Maximize2,
     Minus,
+    NotepadText,
     PanelLeftClose,
     PanelLeftOpen,
     Pin,
     PinOff,
+    Pipette,
     RefreshCw,
     Settings,
     SquareChevronDown,
+    SquarePlus,
     TriangleAlert,
     X,
   } from '@lucide/svelte';
   import CodeMirrorEditor from './lib/CodeMirrorEditor.svelte';
-  import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS, interruptionTemplate, todayFileName } from './lib/defaults';
-  import { renderMarkdown } from './lib/markdown';
+  import MiniNoteView from './lib/MiniNoteView.svelte';
+  import RichMarkdownEditor from './lib/RichMarkdownEditor.svelte';
+  import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS, todayFileName } from './lib/defaults';
   import {
     configureAutostart,
     configureGlobalHotkey,
+    broadcastMiniNoteContent,
+    broadcastMiniNoteSettings,
+    cleanupStaleDeletedImages,
+    closeWindow,
     createMarkdownFile,
     getSettings,
     hideWindow,
     isTauriRuntime,
     listMarkdownFiles,
     minimizeWindow,
+    onMiniNoteContentChanged,
+    onMiniNoteSettingsChanged,
+    onOpenFileInMain,
+    openFileInMain,
+    openMiniNoteWindow,
     readMarkdownFile,
+    readLocalImageDataUrl,
+    reconcilePictureAssets,
     savePastedImage,
     saveSettings,
     scanImageReferences,
     selectWorkspaceDir,
     setAlwaysOnTop,
+    setWindowShadow,
+    setWindowSizeLimits,
     startWindowDrag,
+    startWindowResize,
     toggleMainWindow,
     writeMarkdownFile,
   } from './lib/tauriClient';
   import { TEXT } from './lib/i18n';
   import type { AppSettings, ImageReference, LanguageMode, PlanFile, ThemeMode } from './types';
+
+  type TransitionMode = 'main' | 'to-mini' | 'mini' | 'to-main';
+  type RgbChannel = 'r' | 'g' | 'b';
+  type RgbValue = Record<RgbChannel, number>;
+  type HsvValue = {
+    h: number;
+    s: number;
+    v: number;
+  };
+  type EyeDropperConstructor = new () => {
+    open: () => Promise<{ sRGBHex: string }>;
+  };
+
+  const MINI_TRANSITION_MS = 150;
+  const MAIN_ENTER_SETTLE_MS = 24;
+  const REDUCED_TRANSITION_MS = 1;
+  const MINI_BACKGROUND_PRESETS = ['#ffffff', '#f7fbff', '#f4fbf2', '#fff8ec', '#fff6fa', '#f6f3ff'];
+  const MINI_COLOR_CHANNELS: Array<{ key: RgbChannel; label: string }> = [
+    { key: 'r', label: 'R' },
+    { key: 'g', label: 'G' },
+    { key: 'b', label: 'B' },
+  ];
 
   let settings: AppSettings = structuredClone(DEFAULT_SETTINGS);
   let files: PlanFile[] = [];
@@ -53,21 +92,64 @@
   let dirty = false;
   let sidebarOpen = false;
   let sourceMode = false;
+  let miniMode = false;
+  let transitionMode: TransitionMode = 'main';
   let showSettings = false;
+  let showMiniColorPicker = false;
   let desktopPreview = false;
   let errorMessage = '';
   let newFileName = '';
   let scrollVisible = false;
+  let zoomVisible = false;
+  let zoom = 1;
+  let lastHotkeyToggleAt = 0;
+  let lastZoomWheelAt = 0;
+  let applyingRemoteContent = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let scrollTimer: ReturnType<typeof setTimeout> | null = null;
-  let sourceEditor: { insertText: (text: string) => void } | null = null;
+  let zoomTimer: ReturnType<typeof setTimeout> | null = null;
+  type CursorAnchor = {
+    line: number;
+    yOffset: number;
+  };
+  const CURSOR_ANCHOR_VIEWPORT_TOLERANCE = 24;
+  type NavigationAnchor = { kind: 'cursor'; anchor: CursorAnchor } | { kind: 'top'; line: number };
+  let sourceEditor: {
+    insertText: (text: string) => void;
+    getTopLine: () => number;
+    scrollToLine: (line: number) => boolean;
+    getCursorAnchor: () => CursorAnchor | null;
+    setCursorAnchor: (anchor: CursorAnchor) => boolean;
+  } | null = null;
+  let richEditor: {
+    insertMarkdown: (text: string) => void;
+    insertImage: (path: string) => void;
+    getTopLine: () => number;
+    scrollToLine: (line: number) => boolean;
+    getCursorAnchor: () => CursorAnchor | null;
+    setCursorAnchor: (anchor: CursorAnchor) => boolean;
+  } | null = null;
+  let pendingNavigationAnchor: NavigationAnchor | null = null;
+  const ZOOM_STEPS = [0.78, 0.85, 0.9, 0.95, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
+  const launchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const isMiniWindow = launchParams.get('topplanMode') === 'mini';
+  const launchedMiniFilePath = decodeMiniFilePath(launchParams.get('file'));
 
   $: activeFile = files.find((file) => file.path === settings.activeFilePath) ?? null;
   $: missingImages = images.filter((item) => item.status === 'missing');
   $: externalImages = images.filter((item) => item.status === 'external');
-  $: rendered = renderMarkdown(content, settings.activeFilePath, images);
   $: text = TEXT[settings.language] ?? TEXT.zh;
   $: wordCount = content.replace(/\s+/g, '').length;
+  $: miniSurfaceOpacity = settings.miniNote.opacity;
+  $: miniBackgroundRgb = colorToRgb(settings.miniNote.backgroundColor);
+  $: miniBackgroundChannels = colorToRgbValue(settings.miniNote.backgroundColor);
+  $: miniBackgroundHsv = colorToHsv(settings.miniNote.backgroundColor);
+  $: miniBackgroundHueColor = hsvToColor({ h: miniBackgroundHsv.h, s: 1, v: 1 });
+  $: miniColorEyeDropperAvailable = typeof window !== 'undefined' && 'EyeDropper' in window;
+  $: customMiniBackgroundSelected = !MINI_BACKGROUND_PRESETS.includes(settings.miniNote.backgroundColor);
+  $: if (!showSettings) {
+    showMiniColorPicker = false;
+  }
 
   function cloneSettings(next: Partial<AppSettings>): AppSettings {
     return {
@@ -75,6 +157,7 @@
       ...next,
       window: { ...settings.window, ...(next.window ?? {}) },
       dailyFile: { ...settings.dailyFile, ...(next.dailyFile ?? {}) },
+      miniNote: { ...settings.miniNote, ...(next.miniNote ?? {}) },
     };
   }
 
@@ -84,6 +167,147 @@
 
   function setError(error: unknown): void {
     errorMessage = error instanceof Error ? error.message : String(error);
+  }
+
+  function prefersReducedMotion(): boolean {
+    return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  function transitionDuration(): number {
+    return prefersReducedMotion() ? REDUCED_TRANSITION_MS : MINI_TRANSITION_MS;
+  }
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function decodeMiniFilePath(value: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+      const binary = atob(padded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  function colorToRgb(color: string): string {
+    const normalized = /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#ffffff';
+    const value = normalized.slice(1);
+    return `${parseInt(value.slice(0, 2), 16)} ${parseInt(value.slice(2, 4), 16)} ${parseInt(value.slice(4, 6), 16)}`;
+  }
+
+  function normalizeColor(color: string): string {
+    return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : '#ffffff';
+  }
+
+  function colorToRgbValue(color: string): RgbValue {
+    const normalized = normalizeColor(color);
+    return {
+      r: parseInt(normalized.slice(1, 3), 16),
+      g: parseInt(normalized.slice(3, 5), 16),
+      b: parseInt(normalized.slice(5, 7), 16),
+    };
+  }
+
+  function rgbValueToColor(value: RgbValue): string {
+    return `#${MINI_COLOR_CHANNELS.map((channel) => value[channel.key].toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  function rgbToHsv({ r, g, b }: RgbValue): HsvValue {
+    const red = r / 255;
+    const green = g / 255;
+    const blue = b / 255;
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const delta = max - min;
+    let hue = 0;
+
+    if (delta !== 0) {
+      if (max === red) {
+        hue = ((green - blue) / delta) % 6;
+      } else if (max === green) {
+        hue = (blue - red) / delta + 2;
+      } else {
+        hue = (red - green) / delta + 4;
+      }
+      hue = Math.round(hue * 60);
+      if (hue < 0) {
+        hue += 360;
+      }
+    }
+
+    return {
+      h: hue,
+      s: max === 0 ? 0 : delta / max,
+      v: max,
+    };
+  }
+
+  function hsvToRgb({ h, s, v }: HsvValue): RgbValue {
+    const chroma = v * s;
+    const hueSegment = h / 60;
+    const secondary = chroma * (1 - Math.abs((hueSegment % 2) - 1));
+    const match = v - chroma;
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+
+    if (hueSegment >= 0 && hueSegment < 1) {
+      red = chroma;
+      green = secondary;
+    } else if (hueSegment < 2) {
+      red = secondary;
+      green = chroma;
+    } else if (hueSegment < 3) {
+      green = chroma;
+      blue = secondary;
+    } else if (hueSegment < 4) {
+      green = secondary;
+      blue = chroma;
+    } else if (hueSegment < 5) {
+      red = secondary;
+      blue = chroma;
+    } else {
+      red = chroma;
+      blue = secondary;
+    }
+
+    return {
+      r: Math.round((red + match) * 255),
+      g: Math.round((green + match) * 255),
+      b: Math.round((blue + match) * 255),
+    };
+  }
+
+  function colorToHsv(color: string): HsvValue {
+    return rgbToHsv(colorToRgbValue(color));
+  }
+
+  function hsvToColor(value: HsvValue): string {
+    return rgbValueToColor(hsvToRgb(value));
+  }
+
+  function clampColorChannel(value: string): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+    return Math.min(255, Math.max(0, Math.round(parsed)));
+  }
+
+  function clampHue(value: string): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+    return Math.min(359, Math.max(0, Math.round(parsed)));
   }
 
   async function persistSettings(next = settings): Promise<void> {
@@ -115,8 +339,10 @@
     saving = true;
     try {
       await writeMarkdownFile(settings.activeFilePath, content);
+      await reconcilePictureAssets(settings.activeFilePath, content);
       dirty = false;
       await refreshFiles();
+      await refreshImages();
     } catch (error) {
       setError(error);
     } finally {
@@ -137,7 +363,22 @@
       images = [];
       return;
     }
-    images = await scanImageReferences(settings.workspaceRoot);
+    const references = await scanImageReferences(settings.workspaceRoot);
+    images = await Promise.all(
+      references.map(async (reference) => {
+        if (!reference.resolvedPath || reference.status === 'missing') {
+          return reference;
+        }
+        try {
+          return {
+            ...reference,
+            dataUrl: await readLocalImageDataUrl(reference.resolvedPath),
+          };
+        } catch {
+          return reference;
+        }
+      }),
+    );
   }
 
   async function ensureActiveFile(root: string): Promise<string> {
@@ -167,6 +408,7 @@
     loading = true;
     errorMessage = '';
     try {
+      await cleanupStaleDeletedImages(root, 24);
       const activePath = await ensureActiveFile(root);
       settings = cloneSettings({ workspaceRoot: root, activeFilePath: activePath });
       content = await readMarkdownFile(activePath);
@@ -208,6 +450,21 @@
     }
   }
 
+  async function openFileInMainView(path: string): Promise<void> {
+    await flushSave();
+    try {
+      content = await readMarkdownFile(path);
+      dirty = false;
+      await persistSettings(cloneSettings({ activeFilePath: path }));
+      await refreshFiles();
+      await refreshImages();
+      sidebarOpen = false;
+      showSettings = false;
+    } catch (error) {
+      setError(error);
+    }
+  }
+
   async function createFile(): Promise<void> {
     if (!settings.workspaceRoot) {
       return;
@@ -237,8 +494,76 @@
     await persistSettings(cloneSettings({ language }));
   }
 
-  async function toggleLanguage(): Promise<void> {
-    await setLanguage(settings.language === 'zh' ? 'en' : 'zh');
+  async function setMiniOpacity(value: string): Promise<void> {
+    const parsed = Number(value);
+    const opacity = Math.min(1, Math.max(0.35, Number.isFinite(parsed) ? parsed / 100 : 1));
+    const miniNote = { ...settings.miniNote, opacity };
+    const nextSettings = cloneSettings({ miniNote });
+    settings = nextSettings;
+    applyTheme(settings.theme);
+    if (isTauriRuntime) {
+      void saveSettings(nextSettings).catch(setError);
+    }
+    if (isTauriRuntime && !isMiniWindow) {
+      await broadcastMiniNoteSettings(miniNote);
+    }
+  }
+
+  async function setMiniBackgroundColor(color: string): Promise<void> {
+    const miniNote = { ...settings.miniNote, backgroundColor: normalizeColor(color) };
+    const nextSettings = cloneSettings({ miniNote });
+    settings = nextSettings;
+    applyTheme(settings.theme);
+    if (isTauriRuntime) {
+      void saveSettings(nextSettings).catch(setError);
+    }
+    if (isTauriRuntime && !isMiniWindow) {
+      await broadcastMiniNoteSettings(miniNote);
+    }
+  }
+
+  async function setMiniBackgroundChannel(channel: RgbChannel, value: string): Promise<void> {
+    await setMiniBackgroundColor(
+      rgbValueToColor({
+        ...miniBackgroundChannels,
+        [channel]: clampColorChannel(value),
+      }),
+    );
+  }
+
+  async function pickMiniBackgroundFromScreen(): Promise<void> {
+    const EyeDropper = (window as Window & { EyeDropper?: EyeDropperConstructor }).EyeDropper;
+    if (!EyeDropper) {
+      return;
+    }
+    try {
+      const result = await new EyeDropper().open();
+      await setMiniBackgroundColor(result.sRGBHex);
+    } catch {
+      // The user can cancel screen picking.
+    }
+  }
+
+  async function setMiniBackgroundHue(value: string): Promise<void> {
+    await setMiniBackgroundColor(
+      hsvToColor({
+        ...colorToHsv(settings.miniNote.backgroundColor),
+        h: clampHue(value),
+      }),
+    );
+  }
+
+  async function setMiniBackgroundSv(event: PointerEvent): Promise<void> {
+    if (event.type === 'pointermove' && event.buttons !== 1) {
+      return;
+    }
+    const target = event.currentTarget as HTMLElement;
+    target.setPointerCapture?.(event.pointerId);
+    const box = target.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+    const hsv = colorToHsv(settings.miniNote.backgroundColor);
+    await setMiniBackgroundColor(hsvToColor({ h: hsv.h, s: x, v: 1 - y }));
   }
 
   async function toggleDailyFile(): Promise<void> {
@@ -259,6 +584,93 @@
     }
   }
 
+  async function enterMiniMode(): Promise<void> {
+    if (isTauriRuntime) {
+      if (!settings.activeFilePath) {
+        return;
+      }
+      await flushSave();
+      try {
+        await openMiniNoteWindow(settings.activeFilePath);
+      } catch (error) {
+        setError(error);
+      }
+      return;
+    }
+
+    if (transitionMode !== 'main') {
+      return;
+    }
+    await flushSave();
+    sourceMode = false;
+    sidebarOpen = false;
+    showSettings = false;
+    transitionMode = 'to-mini';
+    await tick();
+
+    await delay(transitionDuration());
+    miniMode = true;
+    transitionMode = 'mini';
+  }
+
+  async function openFileAsMiniNote(path: string, event?: MouseEvent): Promise<void> {
+    event?.stopPropagation();
+    await flushSave();
+    try {
+      if (isTauriRuntime) {
+        await openMiniNoteWindow(path);
+        return;
+      }
+      await switchFile(path);
+      await enterMiniMode();
+    } catch (error) {
+      setError(error);
+    }
+  }
+
+  async function openCurrentFileInMain(): Promise<void> {
+    if (!settings.activeFilePath) {
+      return;
+    }
+    await flushSave();
+    if (isTauriRuntime && isMiniWindow) {
+      try {
+        await openFileInMain(settings.activeFilePath);
+      } catch (error) {
+        setError(error);
+      }
+      return;
+    }
+    await exitMiniMode();
+  }
+
+  async function closeCurrentMiniNote(): Promise<void> {
+    await flushSave();
+    if (isTauriRuntime && isMiniWindow) {
+      try {
+        await closeWindow();
+      } catch (error) {
+        setError(error);
+      }
+      return;
+    }
+    await exitMiniMode();
+  }
+
+  async function exitMiniMode(): Promise<void> {
+    if (transitionMode !== 'mini') {
+      return;
+    }
+    transitionMode = 'to-main';
+    await tick();
+
+    await delay(transitionDuration());
+    miniMode = false;
+    await tick();
+    await delay(prefersReducedMotion() ? 0 : MAIN_ENTER_SETTLE_MS);
+    transitionMode = 'main';
+  }
+
   async function toggleAutostart(): Promise<void> {
     try {
       const enabled = await configureAutostart(!settings.autoStart);
@@ -271,20 +683,32 @@
   function updateContent(next: string): void {
     content = next;
     scheduleSave();
+    if (!applyingRemoteContent && isTauriRuntime && settings.activeFilePath) {
+      void broadcastMiniNoteContent(settings.activeFilePath, next);
+    }
   }
 
   function insertMarkdown(markdown: string): void {
     const text = `\n\n${markdown}\n`;
     if (sourceMode && sourceEditor) {
       sourceEditor.insertText(text);
+    } else if (richEditor) {
+      richEditor.insertMarkdown(markdown);
     } else {
       content = `${content.trimEnd()}${text}`;
       scheduleSave();
     }
   }
 
-  function insertInterruptedTask(): void {
-    insertMarkdown(interruptionTemplate().trim());
+  function insertTaskCheckbox(): void {
+    if (sourceMode && sourceEditor) {
+      sourceEditor.insertText('- [ ] ');
+    } else if (richEditor) {
+      richEditor.insertMarkdown('- [ ] ');
+    } else {
+      content = `${content}${content.endsWith('\n') || !content ? '' : '\n'}- [ ] `;
+      scheduleSave();
+    }
   }
 
   function extensionFromMime(type: string): string {
@@ -294,34 +718,84 @@
     return 'png';
   }
 
-  async function handlePaste(event: ClipboardEvent): Promise<void> {
-    if (!settings.activeFilePath || !event.clipboardData) {
-      return;
+  async function handlePaste(event: ClipboardEvent): Promise<boolean> {
+    if (event.defaultPrevented || !settings.activeFilePath || !event.clipboardData) {
+      return false;
     }
     const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith('image/'));
     if (!imageItem) {
-      return;
+      return false;
     }
 
     event.preventDefault();
     try {
       const file = imageItem.getAsFile();
       if (!file) {
-        return;
+        return false;
       }
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
       const relativePath = await savePastedImage(settings.activeFilePath, bytes, extensionFromMime(file.type));
-      insertMarkdown(`![](${relativePath})`);
+      if (sourceMode && sourceEditor) {
+        sourceEditor.insertText(`\n\n![](${relativePath})\n`);
+      } else if (richEditor) {
+        richEditor.insertImage(relativePath);
+      } else {
+        insertMarkdown(`![](${relativePath})`);
+      }
       await tick();
       await flushSave();
       await refreshImages();
+      return true;
     } catch (error) {
       setError(error);
+    }
+    return true;
+  }
+
+  function currentNavigationAnchor(): NavigationAnchor {
+    if (sourceMode) {
+      const cursor = sourceEditor?.getCursorAnchor();
+      return cursor && cursor.yOffset >= -CURSOR_ANCHOR_VIEWPORT_TOLERANCE && cursor.yOffset <= window.innerHeight
+        ? { kind: 'cursor', anchor: cursor }
+        : { kind: 'top', line: sourceEditor?.getTopLine() ?? 1 };
+    }
+    const cursor = richEditor?.getCursorAnchor();
+    return cursor && cursor.yOffset >= -CURSOR_ANCHOR_VIEWPORT_TOLERANCE && cursor.yOffset <= window.innerHeight
+      ? { kind: 'cursor', anchor: cursor }
+      : { kind: 'top', line: richEditor?.getTopLine() ?? 1 };
+  }
+
+  function restoreNavigationAnchor(anchor: NavigationAnchor): boolean {
+    try {
+      return (
+        anchor.kind === 'cursor'
+          ? sourceMode
+            ? (sourceEditor?.setCursorAnchor(anchor.anchor) ?? false)
+            : (richEditor?.setCursorAnchor(anchor.anchor) ?? false)
+          : sourceMode
+            ? (sourceEditor?.scrollToLine(anchor.line) ?? false)
+            : (richEditor?.scrollToLine(anchor.line) ?? false)
+      );
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function restorePendingNavigation(): void {
+    if (!pendingNavigationAnchor) {
+      return;
+    }
+    if (restoreNavigationAnchor(pendingNavigationAnchor)) {
+      pendingNavigationAnchor = null;
     }
   }
 
   async function toggleSourceMode(): Promise<void> {
+    const anchor = currentNavigationAnchor();
+    pendingNavigationAnchor = anchor;
     sourceMode = !sourceMode;
+    await tick();
+    restorePendingNavigation();
   }
 
   async function handleTitlePointerDown(event: PointerEvent): Promise<void> {
@@ -349,6 +823,73 @@
     }, 3000);
   }
 
+  function closeTransientPanels(event: PointerEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (!target) {
+      return;
+    }
+    if (target.closest('.file-sidebar, .settings-popover, .sidebar-toggle, .settings-toggle')) {
+      return;
+    }
+    if (sidebarOpen) {
+      sidebarOpen = false;
+    }
+    if (showSettings) {
+      showSettings = false;
+    }
+  }
+
+  function handleWheel(event: WheelEvent): void {
+    revealScrollbars();
+    if (!event.ctrlKey || miniMode) {
+      return;
+    }
+    event.preventDefault();
+    const now = Date.now();
+    if (now - lastZoomWheelAt < 80) {
+      return;
+    }
+    lastZoomWheelAt = now;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const nearestIndex = ZOOM_STEPS.reduce((bestIndex, step, index) => {
+      return Math.abs(step - zoom) < Math.abs(ZOOM_STEPS[bestIndex] - zoom) ? index : bestIndex;
+    }, 0);
+    const nextIndex = Math.min(ZOOM_STEPS.length - 1, Math.max(0, nearestIndex + direction));
+    zoom = ZOOM_STEPS[nextIndex];
+    zoomVisible = true;
+    if (zoomTimer) {
+      clearTimeout(zoomTimer);
+    }
+    zoomTimer = setTimeout(() => {
+      zoomVisible = false;
+    }, 1200);
+  }
+
+  async function handleMiniPointerDown(event: PointerEvent, action: 'move' | 'resize', direction?: Parameters<typeof startWindowResize>[0]): Promise<void> {
+    if (event.button !== 0 || !isTauriRuntime) {
+      return;
+    }
+    try {
+      if (action === 'move') {
+        await startWindowDrag();
+      } else if (direction) {
+        await startWindowResize(direction);
+      }
+    } catch {
+      // Native dragging can fail in browser preview; no fallback needed.
+    }
+  }
+
+  function applyRemoteContent(path: string, nextContent: string): void {
+    if (path !== settings.activeFilePath || nextContent === content) {
+      return;
+    }
+    applyingRemoteContent = true;
+    content = nextContent;
+    dirty = false;
+    applyingRemoteContent = false;
+  }
+
   async function loadApp(): Promise<void> {
     applyTheme(settings.theme);
 
@@ -361,8 +902,33 @@
     try {
       settings = await getSettings();
       applyTheme(settings.theme);
+      if (isMiniWindow) {
+        if (!launchedMiniFilePath) {
+          throw new Error('Mini note file path is missing.');
+        }
+        settings = cloneSettings({ activeFilePath: launchedMiniFilePath });
+        content = await readMarkdownFile(launchedMiniFilePath);
+        dirty = false;
+        sourceMode = false;
+        sidebarOpen = false;
+        showSettings = false;
+        miniMode = true;
+        transitionMode = 'mini';
+        await setAlwaysOnTop(true);
+        await setWindowShadow(false);
+        await setWindowSizeLimits(210, 180, 390, 560);
+        return;
+      }
       await setAlwaysOnTop(settings.window.alwaysOnTop);
-      await configureGlobalHotkey(settings.hotkey, () => {
+      await configureGlobalHotkey(settings.hotkey, (event) => {
+        if (event.state !== 'Pressed') {
+          return;
+        }
+        const now = Date.now();
+        if (now - lastHotkeyToggleAt < 700) {
+          return;
+        }
+        lastHotkeyToggleAt = now;
         void toggleMainWindow();
       });
       if (settings.workspaceRoot) {
@@ -377,26 +943,97 @@
 
   onMount(() => {
     void loadApp();
+    let unlistenOpenFile: (() => void) | null = null;
+    let unlistenMiniSettings: (() => void) | null = null;
+    let unlistenMiniContent: (() => void) | null = null;
+    if (isTauriRuntime && !isMiniWindow) {
+      void onOpenFileInMain(async (path) => {
+        await openFileInMainView(path);
+      }).then((unlisten) => {
+        unlistenOpenFile = unlisten;
+      });
+    }
+    if (isTauriRuntime && isMiniWindow) {
+      void onMiniNoteSettingsChanged((miniNote) => {
+        settings = cloneSettings({ miniNote });
+      }).then((unlisten) => {
+        unlistenMiniSettings = unlisten;
+      });
+    }
+    if (isTauriRuntime) {
+      void onMiniNoteContentChanged((payload) => {
+        applyRemoteContent(payload.path, payload.content);
+      }).then((unlisten) => {
+        unlistenMiniContent = unlisten;
+      });
+    }
 
     const beforeUnload = () => {
       void flushSave();
     };
+    const pasteListener = (event: ClipboardEvent) => {
+      void handlePaste(event);
+    };
+    const wheelListener = (event: WheelEvent) => {
+      handleWheel(event);
+    };
     window.addEventListener('beforeunload', beforeUnload);
-    window.addEventListener('paste', handlePaste);
+    window.addEventListener('paste', pasteListener);
+    window.addEventListener('wheel', wheelListener, { capture: true, passive: false });
     return () => {
       window.removeEventListener('beforeunload', beforeUnload);
-      window.removeEventListener('paste', handlePaste);
+      window.removeEventListener('paste', pasteListener);
+      window.removeEventListener('wheel', wheelListener, { capture: true });
+      unlistenOpenFile?.();
+      unlistenMiniSettings?.();
+      unlistenMiniContent?.();
       if (scrollTimer) {
         clearTimeout(scrollTimer);
+      }
+      if (zoomTimer) {
+        clearTimeout(zoomTimer);
       }
     };
   });
 </script>
 
-<main class:scroll-visible={scrollVisible} class="app-shell" onmousemove={revealScrollbars} onwheel={revealScrollbars}>
+<main
+  class:mini-mode={miniMode}
+  class:scroll-visible={scrollVisible}
+  class:to-mini={transitionMode === 'to-mini'}
+  class:to-main={transitionMode === 'to-main'}
+  class="app-shell"
+  style={`--mini-opacity: ${miniSurfaceOpacity}; --mini-slider-opacity: ${settings.miniNote.opacity}; --mini-bg-rgb: ${miniBackgroundRgb}`}
+  onpointerdown={closeTransientPanels}
+  onmousemove={revealScrollbars}
+>
+  {#if miniMode}
+    <div class="mini-note-shell" role="group" aria-label="TopPlan mini note mode">
+      <button class="mini-exit" title={isMiniWindow ? text.openInMain : text.exitMiniMode} onclick={openCurrentFileInMain}>
+        <Maximize2 size={11} />
+      </button>
+      {#if isMiniWindow}
+        <button class="mini-close" title={text.closeMiniNote} onclick={closeCurrentMiniNote}>
+          <X size={12} />
+        </button>
+      {/if}
+      <button class="mini-move-zone" title={text.moveMiniMode} onpointerdown={(event) => handleMiniPointerDown(event, 'move')}></button>
+      <button class="mini-resize-zone mini-resize-n" aria-label="Resize north" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'North')}></button>
+      <button class="mini-resize-zone mini-resize-e" aria-label="Resize east" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'East')}></button>
+      <button class="mini-resize-zone mini-resize-s" aria-label="Resize south" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'South')}></button>
+      <button class="mini-resize-zone mini-resize-w" aria-label="Resize west" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'West')}></button>
+      <button class="mini-resize-corner mini-resize-ne" aria-label="Resize north east" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'NorthEast')}></button>
+      <button class="mini-resize-corner mini-resize-se" aria-label="Resize south east" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'SouthEast')}></button>
+      <button class="mini-resize-corner mini-resize-sw" aria-label="Resize south west" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'SouthWest')}></button>
+      <button class="mini-resize-corner mini-resize-nw" aria-label="Resize north west" onpointerdown={(event) => handleMiniPointerDown(event, 'resize', 'NorthWest')}></button>
+      <MiniNoteView value={content} onChange={updateContent} />
+    </div>
+  {:else}
   <header class="titlebar" role="toolbar" aria-label="TopPlan window controls" tabindex="-1" data-tauri-drag-region onpointerdown={handleTitlePointerDown}>
     <div class="identity" data-tauri-drag-region>
-      <div class="mark" data-tauri-drag-region>TP</div>
+      <div class="mark" data-tauri-drag-region>
+        <img src="/topplan-icon.svg" alt="" />
+      </div>
       <div class="identity-copy" data-tauri-drag-region>
         <h1 data-tauri-drag-region>TopPlan</h1>
         <p data-tauri-drag-region>{activeFile?.name ?? text.subtitle}</p>
@@ -404,13 +1041,13 @@
     </div>
 
     <div class="window-actions">
-      <button class="icon-button text-button" title={settings.language === 'zh' ? text.switchToEnglish : text.switchToChinese} onclick={toggleLanguage}>
-        <Languages size={14} />
+      <button class="icon-button" title={text.enterMiniMode} onclick={enterMiniMode}>
+        <NotepadText size={14} />
       </button>
       <button class="icon-button" title={text.refreshImageIndex} onclick={refreshImages}>
         <RefreshCw size={14} />
       </button>
-      <button class="icon-button" title={text.settings} onclick={() => (showSettings = !showSettings)}>
+      <button class="icon-button settings-toggle" title={text.settings} onclick={() => (showSettings = !showSettings)}>
         <Settings size={14} />
       </button>
       <button class="icon-button" title={settings.window.alwaysOnTop ? text.disableTopmost : text.enableTopmost} onclick={toggleTopmost}>
@@ -463,10 +1100,15 @@
           </div>
           <div class="file-list">
             {#each files as file}
-              <button class:active={file.path === settings.activeFilePath} onclick={() => switchFile(file.path)} title={file.path}>
-                <FileText size={14} />
-                <span>{file.name}</span>
-              </button>
+              <div class:active={file.path === settings.activeFilePath} class="file-list-item" title={file.path}>
+                <button class="file-item-main" onclick={() => switchFile(file.path)}>
+                  <FileText size={14} />
+                  <span>{file.name}</span>
+                </button>
+                <button class="file-mini-button" title={text.openMiniNote} onclick={(event) => openFileAsMiniNote(file.path, event)}>
+                  <NotepadText size={13} />
+                </button>
+              </div>
             {/each}
           </div>
         </aside>
@@ -474,22 +1116,25 @@
 
       <section class="document-surface" onscroll={revealScrollbars}>
         {#if sourceMode}
-          <CodeMirrorEditor bind:this={sourceEditor} value={content} onChange={updateContent} />
+          <CodeMirrorEditor bind:this={sourceEditor} value={content} {zoom} onChange={updateContent} onReady={restorePendingNavigation} />
         {:else}
-          <article
-            class="readable-editor"
-            ondblclick={() => (sourceMode = true)}
-            title={text.doubleClickToEdit}
-          >
-            {@html rendered}
-          </article>
+          <RichMarkdownEditor
+            bind:this={richEditor}
+            value={content}
+            {images}
+            activeFilePath={settings.activeFilePath}
+            {zoom}
+            onChange={updateContent}
+            onPasteImage={handlePaste}
+            onReady={restorePendingNavigation}
+          />
         {/if}
       </section>
     </section>
 
     <footer class="bottom-bar">
       <div class="bottom-left">
-        <button class:active={sidebarOpen} class="bottom-icon" title={sidebarOpen ? text.hideSidebar : text.showSidebar} onclick={() => (sidebarOpen = !sidebarOpen)}>
+        <button class:active={sidebarOpen} class="bottom-icon sidebar-toggle" title={sidebarOpen ? text.hideSidebar : text.showSidebar} onclick={() => (sidebarOpen = !sidebarOpen)}>
           {#if sidebarOpen}
             <PanelLeftClose size={15} />
           {:else}
@@ -499,8 +1144,8 @@
         <button class:active={sourceMode} class="bottom-icon" title={sourceMode ? text.readingMode : text.sourceMode} onclick={toggleSourceMode}>
           <Code2 size={15} />
         </button>
-        <button class="bottom-icon" title={text.interrupted} onclick={insertInterruptedTask}>
-          <Clock size={15} />
+        <button class="bottom-icon" title={text.insertTask} onclick={insertTaskCheckbox}>
+          <SquarePlus size={15} />
         </button>
       </div>
 
@@ -517,8 +1162,12 @@
       </div>
     </footer>
 
+    {#if zoomVisible}
+      <div class="zoom-popover">{Math.round(zoom * 100)}%</div>
+    {/if}
+
     {#if showSettings}
-      <aside class="settings-popover">
+      <aside class:mini-color-picker-open={showMiniColorPicker} class="settings-popover">
         <div class="settings-head">
           <h2>{text.settings}</h2>
           <button class="icon-button" title={text.closeSettings} onclick={() => (showSettings = false)}>
@@ -546,21 +1195,113 @@
           <input value={settings.hotkey} readonly />
         </label>
 
-        <label class="setting-row">
-          <span>{text.language}</span>
-          <select value={settings.language} onchange={(event) => setLanguage(event.currentTarget.value as LanguageMode)}>
-            <option value="zh">中文</option>
-            <option value="en">English</option>
-          </select>
-        </label>
+        <div class="setting-label">{text.language}</div>
+        <div class="segmented-row language-row">
+          <button class:active={settings.language === 'zh'} onclick={() => setLanguage('zh')}>中文</button>
+          <button class:active={settings.language === 'en'} onclick={() => setLanguage('en')}>English</button>
+        </div>
 
         <div class="setting-label">{text.theme}</div>
-        <div class="theme-row">
+        <div class="segmented-row theme-row">
           <button class:active={settings.theme === 'system'} onclick={() => setTheme('system')}>{text.system}</button>
           <button class:active={settings.theme === 'light'} onclick={() => setTheme('light')}>{text.light}</button>
           <button class:active={settings.theme === 'dark'} onclick={() => setTheme('dark')}>{text.dark}</button>
         </div>
+
+        <div class="setting-row mini-opacity-row">
+          <span>{text.miniOpacity}</span>
+          <strong>{Math.round(settings.miniNote.opacity * 100)}%</strong>
+        </div>
+        <input
+          class="setting-slider"
+          type="range"
+          min="35"
+          max="100"
+          step="5"
+          value={Math.round(settings.miniNote.opacity * 100)}
+          aria-label={text.miniOpacity}
+          oninput={(event) => setMiniOpacity(event.currentTarget.value)}
+        />
+
+        <div class="setting-row mini-background-heading">
+          <span>{text.miniBackground}</span>
+        </div>
+        <div class="mini-color-presets" aria-label={text.miniBackground}>
+          {#each MINI_BACKGROUND_PRESETS as color}
+            <button
+              class:active={settings.miniNote.backgroundColor === color}
+              class="mini-color-preset"
+              style={`--preset-color: ${color}`}
+              title={color}
+              aria-label={`${text.miniBackground} ${color}`}
+              onclick={() => {
+                showMiniColorPicker = false;
+                void setMiniBackgroundColor(color);
+              }}
+            ></button>
+          {/each}
+          <button
+            class:active={customMiniBackgroundSelected}
+            class="mini-color-custom"
+            title={text.miniCustomColor}
+            aria-label={text.miniCustomColor}
+            aria-expanded={showMiniColorPicker}
+            onclick={() => (showMiniColorPicker = !showMiniColorPicker)}
+          >
+          </button>
+        </div>
+        {#if showMiniColorPicker}
+          <div class="mini-color-popover" role="dialog" aria-label={text.miniCustomColor}>
+            <button
+              class="mini-color-field"
+              style={`--picker-hue-color: ${miniBackgroundHueColor}; --picker-cursor-x: ${miniBackgroundHsv.s * 100}%; --picker-cursor-y: ${(1 - miniBackgroundHsv.v) * 100}%`}
+              aria-label={text.miniCustomColor}
+              onpointerdown={(event) => setMiniBackgroundSv(event)}
+              onpointermove={(event) => setMiniBackgroundSv(event)}
+            >
+              <span class="mini-color-field-cursor"></span>
+            </button>
+            <div class="mini-color-controls">
+              <button
+                class="mini-color-eyedropper"
+                title={text.miniCustomColor}
+                aria-label={text.miniCustomColor}
+                disabled={!miniColorEyeDropperAvailable}
+                onclick={pickMiniBackgroundFromScreen}
+              >
+                <Pipette size={16} />
+              </button>
+              <span class="mini-color-preview" style={`--custom-color: ${settings.miniNote.backgroundColor}`}></span>
+              <input
+                class="mini-color-hue"
+                type="range"
+                min="0"
+                max="359"
+                step="1"
+                value={miniBackgroundHsv.h}
+                aria-label={`${text.miniCustomColor} hue`}
+                oninput={(event) => setMiniBackgroundHue(event.currentTarget.value)}
+              />
+            </div>
+            <div class="mini-color-rgb-row">
+              {#each MINI_COLOR_CHANNELS as channel}
+                <label class="mini-color-channel">
+                  <input
+                    type="number"
+                    min="0"
+                    max="255"
+                    value={miniBackgroundChannels[channel.key]}
+                    aria-label={`${text.miniCustomColor} ${channel.label}`}
+                    oninput={(event) => setMiniBackgroundChannel(channel.key, event.currentTarget.value)}
+                  />
+                  <span>{channel.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </aside>
     {/if}
+  {/if}
   {/if}
 </main>

@@ -30,6 +30,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     pattern: 'YYYY-MM-DD.md',
   },
+  miniNote: {
+    opacity: 1,
+    backgroundColor: '#ffffff',
+  },
   theme: 'light',
   language: 'zh',
 };
@@ -39,10 +43,4 @@ export function todayFileName(date = new Date()): string {
   const month = `${date.getMonth() + 1}`.padStart(2, '0');
   const day = `${date.getDate()}`.padStart(2, '0');
   return `${year}-${month}-${day}.md`;
-}
-
-export function interruptionTemplate(date = new Date()): string {
-  const hour = `${date.getHours()}`.padStart(2, '0');
-  const minute = `${date.getMinutes()}`.padStart(2, '0');
-  return `\n- [ ] ${hour}:${minute} 被打断：\n  - 已完成：\n  - 下一步：\n`;
 }

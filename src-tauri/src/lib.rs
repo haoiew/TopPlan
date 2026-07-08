@@ -1,17 +1,30 @@
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Mutex,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Alt+Space";
 const DEFAULT_FILE_NAME: &str = "TopPlan.md";
+const MINI_WINDOW_WIDTH: f64 = 260.0;
+const MINI_WINDOW_HEIGHT: f64 = 320.0;
+const MINI_WINDOW_MIN_WIDTH: f64 = 210.0;
+const MINI_WINDOW_MIN_HEIGHT: f64 = 180.0;
+const MINI_WINDOW_MAX_WIDTH: f64 = 390.0;
+const MINI_WINDOW_MAX_HEIGHT: f64 = 560.0;
+const MINI_WINDOW_OFFSET: f64 = 16.0;
+
+#[derive(Default)]
+struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +45,14 @@ pub struct DailyFileSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MiniNoteSettings {
+    pub opacity: f64,
+    #[serde(default = "default_mini_background_color")]
+    pub background_color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
     pub workspace_root: Option<String>,
@@ -45,6 +66,8 @@ pub struct AppSettings {
     pub auto_start: bool,
     #[serde(default = "default_daily_file_settings")]
     pub daily_file: DailyFileSettings,
+    #[serde(default = "default_mini_note_settings")]
+    pub mini_note: MiniNoteSettings,
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_language")]
@@ -88,6 +111,17 @@ fn default_daily_file_settings() -> DailyFileSettings {
     }
 }
 
+fn default_mini_note_settings() -> MiniNoteSettings {
+    MiniNoteSettings {
+        opacity: 1.0,
+        background_color: "#ffffff".to_string(),
+    }
+}
+
+fn default_mini_background_color() -> String {
+    "#ffffff".to_string()
+}
+
 fn default_hotkey() -> String {
     DEFAULT_HOTKEY.to_string()
 }
@@ -109,6 +143,7 @@ impl Default for AppSettings {
             hotkey: default_hotkey(),
             auto_start: false,
             daily_file: default_daily_file_settings(),
+            mini_note: default_mini_note_settings(),
             theme: default_theme(),
             language: default_language(),
         }
@@ -223,6 +258,26 @@ fn extract_image_paths(line: &str) -> Vec<String> {
     output
 }
 
+fn extract_image_paths_from_content(content: &str) -> Vec<String> {
+    content.lines().flat_map(extract_image_paths).collect()
+}
+
+fn image_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    }
+}
+
 fn resolve_image(root: &Path, source_file: &Path, raw: &str) -> (Option<String>, String) {
     let raw_path = PathBuf::from(raw);
     let candidates = if raw_path.is_absolute() {
@@ -276,6 +331,58 @@ fn collect_workspace_images(root: &Path, dir: &Path, output: &mut Vec<ImageRefer
             collect_workspace_images(root, &path, output)?;
         } else if is_markdown(&path) {
             collect_image_references(root, &path, output)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn cleanup_deleted_images(dir: &Path, cutoff: SystemTime) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            if path.file_name().and_then(|name| name.to_str()) == Some(".topplan") {
+                let deleted_images = path.join("deleted-images");
+                if deleted_images.exists() {
+                    for image in fs::read_dir(&deleted_images).map_err(|error| error.to_string())? {
+                        let image = image.map_err(|error| error.to_string())?;
+                        let image_path = image.path();
+                        if !image_path.is_file() {
+                            continue;
+                        }
+                        let modified = fs::metadata(&image_path)
+                            .and_then(|metadata| metadata.modified())
+                            .unwrap_or(SystemTime::now());
+                        if modified < cutoff {
+                            fs::remove_file(&image_path).map_err(|error| error.to_string())?;
+                        }
+                    }
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("deleted-images")
+                && path.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()) == Some(".topplan")
+            {
+                for image in fs::read_dir(&path).map_err(|error| error.to_string())? {
+                    let image = image.map_err(|error| error.to_string())?;
+                    let image_path = image.path();
+                    if !image_path.is_file() {
+                        continue;
+                    }
+                    let modified = fs::metadata(&image_path)
+                        .and_then(|metadata| metadata.modified())
+                        .unwrap_or(SystemTime::now());
+                    if modified < cutoff {
+                        fs::remove_file(&image_path).map_err(|error| error.to_string())?;
+                    }
+                }
+            } else {
+                cleanup_deleted_images(&path, cutoff)?;
+            }
         }
     }
 
@@ -352,9 +459,83 @@ fn scan_image_references(workspace_root: String) -> Result<Vec<ImageReference>, 
 }
 
 #[tauri::command]
+fn cleanup_stale_deleted_images(workspace_root: String, max_age_hours: u64) -> Result<(), String> {
+    let root = PathBuf::from(workspace_root);
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(max_age_hours.saturating_mul(60 * 60)))
+        .unwrap_or(UNIX_EPOCH);
+    cleanup_deleted_images(&root, cutoff)
+}
+
+#[tauri::command]
 fn resolve_local_asset(path: String) -> Result<Option<String>, String> {
     let path = PathBuf::from(path);
     Ok(path.exists().then(|| normalize(&path)))
+}
+
+#[tauri::command]
+fn read_local_image_data_url(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    let encoded = general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{};base64,{}", image_mime(&path), encoded))
+}
+
+#[tauri::command]
+fn reconcile_picture_assets(active_file_path: String, content: String) -> Result<(), String> {
+    let active_path = PathBuf::from(active_file_path);
+    let Some(parent) = active_path.parent() else {
+        return Ok(());
+    };
+
+    let picture_dir = parent.join("picture");
+    let trash_dir = parent.join(".topplan").join("deleted-images");
+    fs::create_dir_all(&trash_dir).map_err(|error| error.to_string())?;
+
+    let referenced: HashSet<String> = extract_image_paths_from_content(&content)
+        .into_iter()
+        .filter_map(|raw| {
+            let normalized = raw.replace('\\', "/");
+            normalized
+                .strip_prefix("picture/")
+                .filter(|name| !name.contains('/') && !name.contains(".."))
+                .map(|name| name.to_string())
+        })
+        .collect();
+
+    fs::create_dir_all(&picture_dir).map_err(|error| error.to_string())?;
+
+    for file_name in &referenced {
+        let current = picture_dir.join(file_name);
+        let deleted = trash_dir.join(file_name);
+        if !current.exists() && deleted.exists() {
+            fs::rename(&deleted, &current).map_err(|error| error.to_string())?;
+        }
+    }
+
+    for entry in fs::read_dir(&picture_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with("topplan-") {
+            continue;
+        }
+        if referenced.contains(file_name) {
+            continue;
+        }
+        let deleted = trash_dir.join(file_name);
+        if deleted.exists() {
+            fs::remove_file(&deleted).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&path, deleted).map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -381,6 +562,96 @@ fn save_pasted_image(active_file_path: String, bytes: Vec<u8>, extension: String
     fs::write(&image_path, bytes).map_err(|error| error.to_string())?;
 
     Ok(format!("picture/{file_name}"))
+}
+
+#[tauri::command]
+async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindowRegistry>, path: String) -> Result<(), String> {
+    let markdown_path = PathBuf::from(&path);
+    if !markdown_path.exists() || !is_markdown(&markdown_path) {
+        return Err("Only existing Markdown files can be opened as mini notes.".to_string());
+    }
+    let normalized_path = normalize(&markdown_path);
+
+    if let Some(existing_label) = registry.0.lock().map_err(|error| error.to_string())?.remove(&normalized_path) {
+        if let Some(existing_window) = app.get_webview_window(&existing_label) {
+            existing_window.close().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    let label = format!("mini-note-{timestamp}");
+    let encoded_path = general_purpose::URL_SAFE_NO_PAD.encode(path.as_bytes());
+    let offset = (timestamp % 4) as f64 * MINI_WINDOW_OFFSET;
+    let (x, y) = app
+        .get_webview_window("main")
+        .and_then(|main| {
+            let position = main.outer_position().ok()?;
+            let size = main.outer_size().ok()?;
+            Some((
+                position.x as f64 + size.width as f64 + MINI_WINDOW_OFFSET + offset,
+                position.y as f64 + MINI_WINDOW_OFFSET + offset,
+            ))
+        })
+        .unwrap_or((72.0 + offset, 72.0 + offset));
+    let window = WebviewWindowBuilder::new(
+        &app,
+        label,
+        WebviewUrl::App(format!("index.html?topplanMode=mini&file={encoded_path}").into()),
+    )
+    .title("TopPlan 便签")
+    .inner_size(MINI_WINDOW_WIDTH, MINI_WINDOW_HEIGHT)
+    .min_inner_size(MINI_WINDOW_MIN_WIDTH, MINI_WINDOW_MIN_HEIGHT)
+    .max_inner_size(MINI_WINDOW_MAX_WIDTH, MINI_WINDOW_MAX_HEIGHT)
+    .position(x, y)
+    .decorations(false)
+    .transparent(true)
+    .resizable(true)
+    .always_on_top(true)
+    .visible(true)
+    .focused(true)
+    .shadow(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+
+    registry
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(normalized_path.clone(), window.label().to_string());
+    let app_for_close = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Destroyed | WindowEvent::CloseRequested { .. }) {
+            {
+                let registry = app_for_close.state::<MiniNoteWindowRegistry>();
+                if let Ok(mut windows) = registry.0.lock() {
+                    windows.remove(&normalized_path);
+                };
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn open_file_in_main(app: AppHandle, path: String) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    app.emit_to("main", "open-file-in-main", path)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -448,6 +719,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(MiniNoteWindowRegistry::default())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -479,8 +751,13 @@ pub fn run() {
             write_markdown_file,
             create_markdown_file,
             scan_image_references,
+            cleanup_stale_deleted_images,
             resolve_local_asset,
+            read_local_image_data_url,
+            reconcile_picture_assets,
             save_pasted_image,
+            open_mini_note_window,
+            open_file_in_main,
             toggle_main_window
         ])
         .run(tauri::generate_context!())

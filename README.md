@@ -1,15 +1,19 @@
 # TopPlan
 
-TopPlan is a lightweight Windows desktop planner built with Tauri 2, Svelte, TypeScript, CodeMirror 6, and markdown-it. It keeps a compact Markdown editor on top of the desktop so interrupted work can be captured quickly.
+TopPlan is a lightweight Windows desktop planner built with Tauri 2, Svelte, TypeScript, CodeMirror 6, and TipTap. It keeps compact Markdown editing surfaces on top of the desktop so interrupted work can be captured quickly.
 
 ## Current Capabilities
 
 - Local-only data. The first launch asks for a data folder and reads existing `.md` files directly.
 - Default single-file workflow with `TopPlan.md`.
 - Optional daily file mode using `YYYY-MM-DD.md`.
-- Markdown editing, preview, and split view.
-- GFM-style Markdown features including task lists, tables, footnotes, anchors, links, code highlighting, and local images.
+- Rich Markdown editing, source editing, and split view.
+- Markdown task lists, links, code blocks, and local images.
+- Mini note windows for opening Markdown files as small always-on-top notes.
+- Mini note opacity and background color settings.
+- Editor zoom controls with cursor and scroll position preservation between editor modes.
 - Local image reference index in `.topplan/image-index.json`.
+- Pasted-image storage, reconciliation of unused pasted images, and cleanup of stale deleted image assets.
 - Always-on-top frameless window, tray menu, single-instance behavior, global hotkey plumbing, and autostart setting.
 
 ## Project Environment

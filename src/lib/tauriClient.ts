@@ -1,9 +1,21 @@
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
+import { emit, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
-import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { register, type ShortcutEvent } from '@tauri-apps/plugin-global-shortcut';
+import { getCurrentWindow, LogicalSize, type PhysicalPosition, type PhysicalSize } from '@tauri-apps/api/window';
 import type { AppSettings, ImageReference, PlanFile } from '../types';
+
+export type ResizeDirection = 'East' | 'North' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West';
+export type WindowFrame = {
+  position: PhysicalPosition;
+  size: PhysicalSize;
+};
+export type MiniNoteContentUpdate = {
+  sourceLabel: string;
+  path: string;
+  content: string;
+};
 
 declare global {
   interface Window {
@@ -64,8 +76,19 @@ export async function scanImageReferences(workspaceRoot: string): Promise<ImageR
   return invoke<ImageReference[]>('scan_image_references', { workspaceRoot });
 }
 
-export function localAssetUrl(path: string): string {
-  return convertFileSrc(path);
+export async function cleanupStaleDeletedImages(workspaceRoot: string, maxAgeHours = 24): Promise<void> {
+  requireTauri();
+  await invoke('cleanup_stale_deleted_images', { workspaceRoot, maxAgeHours });
+}
+
+export async function readLocalImageDataUrl(path: string): Promise<string> {
+  requireTauri();
+  return invoke<string>('read_local_image_data_url', { path });
+}
+
+export async function reconcilePictureAssets(activeFilePath: string, content: string): Promise<void> {
+  requireTauri();
+  await invoke('reconcile_picture_assets', { activeFilePath, content });
 }
 
 export async function setAlwaysOnTop(alwaysOnTop: boolean): Promise<void> {
@@ -73,9 +96,19 @@ export async function setAlwaysOnTop(alwaysOnTop: boolean): Promise<void> {
   await getCurrentWindow().setAlwaysOnTop(alwaysOnTop);
 }
 
+export async function setWindowShadow(enabled: boolean): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().setShadow(enabled);
+}
+
 export async function hideWindow(): Promise<void> {
   requireTauri();
   await getCurrentWindow().hide();
+}
+
+export async function closeWindow(): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().close();
 }
 
 export async function minimizeWindow(): Promise<void> {
@@ -88,9 +121,93 @@ export async function startWindowDrag(): Promise<void> {
   await getCurrentWindow().startDragging();
 }
 
+export async function startWindowResize(direction: ResizeDirection): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().startResizeDragging(direction);
+}
+
+export async function getWindowInnerSize(): Promise<PhysicalSize> {
+  requireTauri();
+  return getCurrentWindow().innerSize();
+}
+
+export async function getWindowFrame(): Promise<WindowFrame> {
+  requireTauri();
+  const window = getCurrentWindow();
+  const [position, size] = await Promise.all([window.outerPosition(), window.outerSize()]);
+  return { position, size };
+}
+
+export async function setWindowFrame(frame: WindowFrame): Promise<void> {
+  requireTauri();
+  const window = getCurrentWindow();
+  await window.setSize(frame.size);
+  await window.setPosition(frame.position);
+}
+
+export async function setWindowInnerSize(width: number, height: number): Promise<void> {
+  requireTauri();
+  await getCurrentWindow().setSize(new LogicalSize(width, height));
+}
+
+export async function setWindowSizeLimits(minWidth?: number, minHeight?: number, maxWidth?: number, maxHeight?: number): Promise<void> {
+  requireTauri();
+  const window = getCurrentWindow();
+  await window.setMinSize(minWidth && minHeight ? new LogicalSize(minWidth, minHeight) : null);
+  await window.setMaxSize(maxWidth && maxHeight ? new LogicalSize(maxWidth, maxHeight) : null);
+}
+
 export async function toggleMainWindow(): Promise<void> {
   requireTauri();
   await invoke('toggle_main_window');
+}
+
+export async function openMiniNoteWindow(path: string): Promise<void> {
+  requireTauri();
+  await invoke('open_mini_note_window', { path });
+}
+
+export async function openFileInMain(path: string): Promise<void> {
+  requireTauri();
+  await invoke('open_file_in_main', { path });
+}
+
+export async function onOpenFileInMain(callback: (path: string) => void | Promise<void>): Promise<() => void> {
+  requireTauri();
+  return listen<string>('open-file-in-main', (event) => {
+    void callback(event.payload);
+  });
+}
+
+export async function broadcastMiniNoteSettings(miniNote: AppSettings['miniNote']): Promise<void> {
+  requireTauri();
+  await emit('mini-note-settings-changed', miniNote);
+}
+
+export async function onMiniNoteSettingsChanged(callback: (miniNote: AppSettings['miniNote']) => void | Promise<void>): Promise<() => void> {
+  requireTauri();
+  return listen<AppSettings['miniNote']>('mini-note-settings-changed', (event) => {
+    void callback(event.payload);
+  });
+}
+
+export async function broadcastMiniNoteContent(path: string, content: string): Promise<void> {
+  requireTauri();
+  await emit('mini-note-content-changed', {
+    sourceLabel: getCurrentWindow().label,
+    path,
+    content,
+  } satisfies MiniNoteContentUpdate);
+}
+
+export async function onMiniNoteContentChanged(callback: (payload: MiniNoteContentUpdate) => void | Promise<void>): Promise<() => void> {
+  requireTauri();
+  return listen<MiniNoteContentUpdate>('mini-note-content-changed', (event) => {
+    if (event.payload.sourceLabel === getCurrentWindow().label) {
+      return;
+    }
+    void callback(event.payload);
+  });
 }
 
 export async function savePastedImage(activeFilePath: string, bytes: number[], extension: string): Promise<string> {
@@ -108,8 +225,14 @@ export async function configureAutostart(enabled: boolean): Promise<boolean> {
   return isEnabled();
 }
 
-export async function configureGlobalHotkey(hotkey: string, callback: () => void): Promise<void> {
+export async function configureGlobalHotkey(hotkey: string, callback: (event: ShortcutEvent) => void): Promise<void> {
   requireTauri();
-  await unregisterAll();
-  await register(hotkey, callback);
+  try {
+    await register(hotkey, callback);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.toLowerCase().includes('already registered')) {
+      throw error;
+    }
+  }
 }
