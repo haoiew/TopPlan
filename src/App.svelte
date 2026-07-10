@@ -58,7 +58,7 @@
     setWindowSizeLimits,
     startWindowDrag,
     startWindowResize,
-    toggleMainWindow,
+    toggleAppWindows,
     writeMarkdownFile,
   } from './lib/tauriClient';
   import { TEXT } from './lib/i18n';
@@ -1044,7 +1044,7 @@
           return;
         }
         lastHotkeyToggleAt = now;
-        void toggleMainWindow();
+        void toggleAppWindows();
       });
       if (settings.workspaceRoot) {
         await openWorkspace(settings.workspaceRoot);

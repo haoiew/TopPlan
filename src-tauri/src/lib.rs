@@ -733,16 +733,22 @@ fn open_file_in_main(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn toggle_main_window(app: AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("main") else {
+fn toggle_app_windows(app: AppHandle) -> Result<(), String> {
+    let Some(main_window) = app.get_webview_window("main") else {
         return Ok(());
     };
 
-    if window.is_visible().map_err(|error| error.to_string())? {
-        window.hide().map_err(|error| error.to_string())?;
+    let windows = app.webview_windows();
+    if main_window.is_visible().map_err(|error| error.to_string())? {
+        for window in windows.values() {
+            window.hide().map_err(|error| error.to_string())?;
+        }
     } else {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        for window in windows.values() {
+            window.show().map_err(|error| error.to_string())?;
+            window.unminimize().map_err(|error| error.to_string())?;
+        }
+        main_window.set_focus().map_err(|error| error.to_string())?;
     }
 
     Ok(())
@@ -839,7 +845,7 @@ pub fn run() {
             save_pasted_image,
             open_mini_note_window,
             open_file_in_main,
-            toggle_main_window
+            toggle_app_windows
         ])
         .run(tauri::generate_context!())
         .expect("error while running TopPlan");

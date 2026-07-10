@@ -162,9 +162,9 @@ export async function setWindowSizeLimits(minWidth?: number, minHeight?: number,
   await window.setMaxSize(maxWidth && maxHeight ? new LogicalSize(maxWidth, maxHeight) : null);
 }
 
-export async function toggleMainWindow(): Promise<void> {
+export async function toggleAppWindows(): Promise<void> {
   requireTauri();
-  await invoke('toggle_main_window');
+  await invoke('toggle_app_windows');
 }
 
 export async function openMiniNoteWindow(path: string): Promise<void> {
