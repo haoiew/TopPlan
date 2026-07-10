@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { normalizeEscapedInlineMarkdown } from './markdownView';
+
   type MiniLine =
     | { kind: 'heading'; key: string; text: string; level: number }
     | { kind: 'task'; key: string; text: string; checked: boolean; lineIndex: number }
@@ -9,7 +11,10 @@
   export let onChange: (value: string) => void = () => {};
 
   function stripInline(markdown: string): string {
-    return markdown
+    return normalizeEscapedInlineMarkdown(markdown)
+      .replace(/<span\s+[^>]*data-topplan-time=["'][^"']*["'][^>]*>(.*?)<\/span>/gi, '$1')
+      .replace(/<input\s+[^>]*data-topplan-task[^>]*checked[^>]*>/gi, '[x]')
+      .replace(/<input\s+[^>]*data-topplan-task[^>]*>/gi, '[ ]')
       .replace(/\*\*([^*]+)\*\*/g, '$1')
       .replace(/__([^_]+)__/g, '$1')
       .replace(/`([^`]+)`/g, '$1')

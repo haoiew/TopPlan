@@ -61,6 +61,11 @@ export async function createMarkdownFile(workspaceRoot: string, name: string, co
   return invoke<PlanFile>('create_markdown_file', { workspaceRoot, name, content });
 }
 
+export async function renameMarkdownFile(path: string, newName: string): Promise<PlanFile> {
+  requireTauri();
+  return invoke<PlanFile>('rename_markdown_file', { path, newName });
+}
+
 export async function readMarkdownFile(path: string): Promise<string> {
   requireTauri();
   return invoke<string>('read_markdown_file', { path });

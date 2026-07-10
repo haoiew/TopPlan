@@ -10,18 +10,20 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, Position, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Alt+Space";
 const DEFAULT_FILE_NAME: &str = "TopPlan.md";
+const MAIN_WINDOW_MARGIN: f64 = 24.0;
 const MINI_WINDOW_WIDTH: f64 = 260.0;
 const MINI_WINDOW_HEIGHT: f64 = 320.0;
 const MINI_WINDOW_MIN_WIDTH: f64 = 210.0;
 const MINI_WINDOW_MIN_HEIGHT: f64 = 180.0;
 const MINI_WINDOW_MAX_WIDTH: f64 = 390.0;
 const MINI_WINDOW_MAX_HEIGHT: f64 = 560.0;
-const MINI_WINDOW_OFFSET: f64 = 16.0;
+const MINI_WINDOW_MARGIN: f64 = 28.0;
+const MINI_WINDOW_GAP: f64 = 12.0;
 
 #[derive(Default)]
 struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
@@ -96,8 +98,8 @@ pub struct ImageReference {
 
 fn default_window_settings() -> WindowSettings {
     WindowSettings {
-        x: 0,
-        y: 0,
+        x: MAIN_WINDOW_MARGIN as i32,
+        y: MAIN_WINDOW_MARGIN as i32,
         width: 420,
         height: 640,
         always_on_top: true,
@@ -221,6 +223,70 @@ fn ensure_child_path(root: &Path, child_name: &str) -> Result<PathBuf, String> {
         return Err("File name must stay inside the selected workspace.".to_string());
     }
     Ok(root.join(clean))
+}
+
+fn clean_markdown_file_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("File name cannot be empty.".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') || trimmed.contains("..") {
+        return Err("File name cannot contain path separators or parent segments.".to_string());
+    }
+    let file_name = if trimmed.to_ascii_lowercase().ends_with(".md") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.md")
+    };
+    if !is_markdown(Path::new(&file_name)) {
+        return Err("Only Markdown files can be renamed here.".to_string());
+    }
+    Ok(file_name)
+}
+
+fn monitor_work_area_logical(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    (
+        area.position.x as f64 / scale,
+        area.position.y as f64 / scale,
+        area.size.width as f64 / scale,
+        area.size.height as f64 / scale,
+    )
+}
+
+fn primary_work_area_logical(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
+    app.primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor_work_area_logical(&monitor))
+}
+
+fn main_monitor_work_area_logical(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
+    app.get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .map(|monitor| monitor_work_area_logical(&monitor))
+        .or_else(|| primary_work_area_logical(app))
+}
+
+fn main_window_position(app: &AppHandle) -> Option<(f64, f64)> {
+    primary_work_area_logical(app).map(|(x, y, _width, _height)| (x + MAIN_WINDOW_MARGIN, y + MAIN_WINDOW_MARGIN))
+}
+
+fn mini_note_window_position(app: &AppHandle, open_count: usize) -> Option<(f64, f64)> {
+    let (area_x, area_y, area_width, area_height) = main_monitor_work_area_logical(app)?;
+    let horizontal_step = MINI_WINDOW_WIDTH + MINI_WINDOW_GAP;
+    let vertical_step = MINI_WINDOW_HEIGHT + MINI_WINDOW_GAP;
+    let usable_width = (area_width - MINI_WINDOW_MARGIN * 2.0).max(MINI_WINDOW_WIDTH);
+    let columns = ((usable_width + MINI_WINDOW_GAP) / horizontal_step).floor().max(1.0) as usize;
+    let column = open_count % columns;
+    let row = open_count / columns;
+    let right_x = area_x + area_width - MINI_WINDOW_WIDTH - MINI_WINDOW_MARGIN;
+    let raw_x = right_x - column as f64 * horizontal_step;
+    let raw_y = area_y + MINI_WINDOW_MARGIN + row as f64 * vertical_step;
+    let min_x = area_x + MINI_WINDOW_MARGIN;
+    let max_y = area_y + area_height - MINI_WINDOW_HEIGHT - MINI_WINDOW_MARGIN;
+    Some((raw_x.max(min_x), raw_y.min(max_y).max(area_y + MINI_WINDOW_MARGIN)))
 }
 
 fn safe_image_extension(extension: &str) -> Result<&'static str, String> {
@@ -442,6 +508,27 @@ fn create_markdown_file(workspace_root: String, name: String, content: String) -
 }
 
 #[tauri::command]
+fn rename_markdown_file(path: String, new_name: String) -> Result<PlanFile, String> {
+    let current_path = PathBuf::from(&path);
+    if !current_path.exists() || !is_markdown(&current_path) {
+        return Err("Only existing Markdown files can be renamed.".to_string());
+    }
+    let Some(parent) = current_path.parent() else {
+        return Err("Current Markdown file has no parent directory.".to_string());
+    };
+    let clean_name = clean_markdown_file_name(&new_name)?;
+    let next_path = parent.join(clean_name);
+    if next_path == current_path {
+        return plan_file(&current_path, Some(&normalize(&current_path)));
+    }
+    if next_path.exists() {
+        return Err("A Markdown file with that name already exists.".to_string());
+    }
+    fs::rename(&current_path, &next_path).map_err(|error| error.to_string())?;
+    plan_file(&next_path, Some(&normalize(&next_path)))
+}
+
+#[tauri::command]
 fn scan_image_references(workspace_root: String) -> Result<Vec<ImageReference>, String> {
     let root = PathBuf::from(&workspace_root);
     let mut references = Vec::new();
@@ -579,24 +666,15 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
         }
     }
 
+    let open_count = registry.0.lock().map_err(|error| error.to_string())?.len();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_millis();
     let label = format!("mini-note-{timestamp}");
     let encoded_path = general_purpose::URL_SAFE_NO_PAD.encode(path.as_bytes());
-    let offset = (timestamp % 4) as f64 * MINI_WINDOW_OFFSET;
-    let (x, y) = app
-        .get_webview_window("main")
-        .and_then(|main| {
-            let position = main.outer_position().ok()?;
-            let size = main.outer_size().ok()?;
-            Some((
-                position.x as f64 + size.width as f64 + MINI_WINDOW_OFFSET + offset,
-                position.y as f64 + MINI_WINDOW_OFFSET + offset,
-            ))
-        })
-        .unwrap_or((72.0 + offset, 72.0 + offset));
+    let fallback_offset = open_count as f64 * MINI_WINDOW_GAP;
+    let (x, y) = mini_note_window_position(&app, open_count).unwrap_or((72.0 + fallback_offset, 72.0));
     let window = WebviewWindowBuilder::new(
         &app,
         label,
@@ -739,7 +817,9 @@ pub fn run() {
             build_tray(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_always_on_top(true);
-                let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: 0 }));
+                if let Some((x, y)) = main_window_position(app.handle()) {
+                    let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
+                }
             }
             Ok(())
         })
@@ -750,6 +830,7 @@ pub fn run() {
             read_markdown_file,
             write_markdown_file,
             create_markdown_file,
+            rename_markdown_file,
             scan_image_references,
             cleanup_stale_deleted_images,
             resolve_local_asset,

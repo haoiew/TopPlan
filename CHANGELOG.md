@@ -1,23 +1,54 @@
 # Changelog
 
-## 2026-07-08
+## 0.2.0 - 2026-07-10
 
-Changes relative to `c11afbc` (`fix: improve desktop editing and tray behavior`).
+相对于上一版本 `0.1.0`（提交 `cef3ea1`）。
 
-### Added
+### 新增
 
-- Added a TipTap-based rich Markdown editor with task list and image support while keeping the CodeMirror source editor available.
-- Added mini note windows for opening Markdown files as small always-on-top notes, including opacity and background color settings.
-- Added image data URL loading for local images, pasted-image reconciliation, and cleanup for stale deleted image assets.
-- Added editor zoom controls and scroll/cursor anchoring between rich and source editing modes.
-- Added window frame controls for mini mode, including custom dragging, resizing, shadow toggling, and size limits.
+- 新增可重复执行的 Playwright 端到端测试脚本，`pnpm test:e2e` 会自动启动并回收专用 Vite 测试服务。
+- 新增任务框插入回归测试，覆盖富文本段落、空行、缩进元数据和源码模式下的任务切换行为。
+- 新增 Markdown 文件重命名能力，标题区支持双击改名并同步活动文件设置。
+- 新增当前时间插入按钮，富文本模式会保留 TopPlan 时间标记。
+- 新增项目运行入口配置，方便在 Codex 环境中直接启动桌面开发服务。
 
-### Changed
+### 改进
 
-- Replaced the markdown-it rendering stack with TipTap Markdown packages.
-- Updated desktop permissions for the new mini-note windows and window-management APIs.
-- Improved bilingual UI text for task insertion, mini-note actions, and mini-note settings.
+- 将应用版本统一提升到 `0.2.0`，同步前端包、Tauri 配置和 Rust crate 版本。
+- 更新应用图标体系，改用 PNG favicon、标题栏图标和新的 Tauri 多平台图标资源。
+- 优化主窗口和便签窗口的初始摆放位置，避免贴边并按显示器工作区排列便签。
+- 改进富文本编辑器的任务框切换、Tab 缩进、加粗输入、复制文本、空任务行和光标定位处理。
+- 改进源码编辑器的 Tab 缩进、任务框切换和按文件保留编辑状态的行为。
+- 优化文件切换、新建文件和主窗口打开文件时的读取与设置保存顺序。
 
-### Removed
+### 仓库配置
 
-- Removed the old markdown-it renderer and interruption template helper.
+- 新增 `playwright.config.js` 和 `scripts/run-e2e.mjs`，将端到端测试目录、超时、测试 URL 和测试服务生命周期固化到仓库。
+- 更新 `.gitignore`，忽略 Playwright 报告、测试结果和图标候选素材目录，保持仓库只跟踪正式资源。
+- 更新 Tauri build script 的 `rerun-if-changed` 规则，让图标和配置变更能正确触发重建。
+
+### 移除
+
+- 移除旧的 SVG favicon、标题图标和 Tauri 源图标，避免与新版 PNG 图标体系重复。
+
+## 0.1.0 - 2026-07-08
+
+相对于提交 `c11afbc`（`fix: improve desktop editing and tray behavior`）。
+
+### 新增
+
+- 新增基于 TipTap 的富文本 Markdown 编辑器，支持任务列表和图片，同时保留 CodeMirror 源码编辑模式。
+- 新增便签窗口，可将 Markdown 文件打开为小型置顶便签，并支持透明度和背景色设置。
+- 新增本地图片 data URL 读取、粘贴图片资源同步和废弃图片定期清理。
+- 新增编辑器缩放，以及富文本/源码模式之间的滚动和光标锚点保持。
+- 新增便签模式窗口控制，包括拖动、缩放、阴影切换和尺寸限制。
+
+### 改进
+
+- 将 Markdown 渲染栈从 markdown-it 切换到 TipTap Markdown 包。
+- 更新桌面端权限，支持便签窗口和新增窗口管理 API。
+- 完善任务插入、便签操作和便签设置的中英文界面文案。
+
+### 移除
+
+- 移除旧的 markdown-it 渲染器和打断记录模板辅助函数。

@@ -1,17 +1,20 @@
 {
   "name": "topplan",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lightweight always-on-top local Markdown planner for Windows.",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
+    "dev:e2e": "vite --host 127.0.0.1 --port 1430",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "test:e2e": "node scripts/run-e2e.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tauri-apps/cli": "^2.11.4",
     "@tsconfig/svelte": "^5.0.8",
@@ -36,6 +39,7 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-store": "^2.4.3",
     "@tiptap/core": "^3.27.1",
+    "@tiptap/extension-bold": "3.27.1",
     "@tiptap/extension-image": "^3.27.1",
     "@tiptap/extension-task-item": "^3.27.1",
     "@tiptap/extension-task-list": "^3.27.1",

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
+    Clock3,
     Code2,
     FilePlus,
     FileText,
@@ -25,6 +26,7 @@
   import MiniNoteView from './lib/MiniNoteView.svelte';
   import RichMarkdownEditor from './lib/RichMarkdownEditor.svelte';
   import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS, todayFileName } from './lib/defaults';
+  import { toggleTaskMarkerOnLine } from './lib/markdownView';
   import {
     configureAutostart,
     configureGlobalHotkey,
@@ -46,6 +48,7 @@
     readMarkdownFile,
     readLocalImageDataUrl,
     reconcilePictureAssets,
+    renameMarkdownFile,
     savePastedImage,
     saveSettings,
     scanImageReferences,
@@ -71,6 +74,11 @@
   };
   type EyeDropperConstructor = new () => {
     open: () => Promise<{ sRGBHex: string }>;
+  };
+  type TopPlanTestApi = {
+    setDocument: (markdown: string) => Promise<void>;
+    getContent: () => string;
+    getRichDebugSnapshot: () => unknown;
   };
 
   const MINI_TRANSITION_MS = 150;
@@ -102,6 +110,10 @@
   let scrollVisible = false;
   let zoomVisible = false;
   let zoom = 1;
+  let renamingTitle = false;
+  let committingTitleRename = false;
+  let titleDraft = '';
+  let titleInput: HTMLInputElement | null = null;
   let lastHotkeyToggleAt = 0;
   let lastZoomWheelAt = 0;
   let applyingRemoteContent = false;
@@ -116,6 +128,7 @@
   type NavigationAnchor = { kind: 'cursor'; anchor: CursorAnchor } | { kind: 'top'; line: number };
   let sourceEditor: {
     insertText: (text: string) => void;
+    toggleTaskMarkerAtLineStart: () => void;
     getTopLine: () => number;
     scrollToLine: (line: number) => boolean;
     getCursorAnchor: () => CursorAnchor | null;
@@ -123,6 +136,11 @@
   } | null = null;
   let richEditor: {
     insertMarkdown: (text: string) => void;
+    insertTimestamp: (value: string) => void;
+    getSelectedSourceLine: () => number;
+    getTaskToggleTarget: (markdown: string) => { editorLine: number; documentLine: number };
+    getSourceLineAnchor: (line: number) => CursorAnchor;
+    getDebugSnapshot: () => unknown;
     insertImage: (path: string) => void;
     getTopLine: () => number;
     scrollToLine: (line: number) => boolean;
@@ -410,8 +428,9 @@
     try {
       await cleanupStaleDeletedImages(root, 24);
       const activePath = await ensureActiveFile(root);
+      const nextContent = await readMarkdownFile(activePath);
       settings = cloneSettings({ workspaceRoot: root, activeFilePath: activePath });
-      content = await readMarkdownFile(activePath);
+      content = nextContent;
       dirty = false;
       await refreshFiles();
       await refreshImages();
@@ -440,9 +459,11 @@
     }
     await flushSave();
     try {
-      content = await readMarkdownFile(path);
+      const nextContent = await readMarkdownFile(path);
+      const settingsSave = persistSettings(cloneSettings({ activeFilePath: path }));
+      content = nextContent;
       dirty = false;
-      await persistSettings(cloneSettings({ activeFilePath: path }));
+      await settingsSave;
       await refreshFiles();
       await refreshImages();
     } catch (error) {
@@ -453,9 +474,11 @@
   async function openFileInMainView(path: string): Promise<void> {
     await flushSave();
     try {
-      content = await readMarkdownFile(path);
+      const nextContent = await readMarkdownFile(path);
+      const settingsSave = persistSettings(cloneSettings({ activeFilePath: path }));
+      content = nextContent;
       dirty = false;
-      await persistSettings(cloneSettings({ activeFilePath: path }));
+      await settingsSave;
       await refreshFiles();
       await refreshImages();
       sidebarOpen = false;
@@ -475,14 +498,83 @@
     try {
       const created = await createMarkdownFile(settings.workspaceRoot, name, DEFAULT_MARKDOWN);
       newFileName = '';
-      content = await readMarkdownFile(created.path);
+      const nextContent = await readMarkdownFile(created.path);
+      const settingsSave = persistSettings(cloneSettings({ activeFilePath: created.path }));
+      content = nextContent;
       dirty = false;
-      await persistSettings(cloneSettings({ activeFilePath: created.path }));
+      await settingsSave;
       await refreshFiles();
       await refreshImages();
       sidebarOpen = true;
     } catch (error) {
       setError(error);
+    }
+  }
+
+  function editableFileName(name: string): string {
+    return name.replace(/\.md$/i, '');
+  }
+
+  function normalizedMarkdownName(name: string): string {
+    const trimmed = name.trim();
+    return trimmed.toLowerCase().endsWith('.md') ? trimmed : `${trimmed}.md`;
+  }
+
+  async function startTitleRename(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (!activeFile) {
+      return;
+    }
+    titleDraft = editableFileName(activeFile.name);
+    renamingTitle = true;
+    await tick();
+    titleInput?.focus();
+    titleInput?.select();
+  }
+
+  function cancelTitleRename(): void {
+    renamingTitle = false;
+    titleDraft = '';
+  }
+
+  async function commitTitleRename(): Promise<void> {
+    if (committingTitleRename) {
+      return;
+    }
+    if (!activeFile) {
+      cancelTitleRename();
+      return;
+    }
+    const nextName = normalizedMarkdownName(titleDraft);
+    if (!titleDraft.trim() || nextName === activeFile.name) {
+      cancelTitleRename();
+      return;
+    }
+    committingTitleRename = true;
+    try {
+      await flushSave();
+      const renamed = await renameMarkdownFile(activeFile.path, nextName);
+      await persistSettings(cloneSettings({ activeFilePath: renamed.path }));
+      await refreshFiles();
+      await refreshImages();
+      cancelTitleRename();
+    } catch (error) {
+      setError(error);
+      await tick();
+      titleInput?.focus();
+      titleInput?.select();
+    } finally {
+      committingTitleRename = false;
+    }
+  }
+
+  function handleTitleRenameKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void commitTitleRename();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelTitleRename();
     }
   }
 
@@ -700,13 +792,36 @@
     }
   }
 
-  function insertTaskCheckbox(): void {
+  async function insertTaskCheckbox(): Promise<void> {
     if (sourceMode && sourceEditor) {
-      sourceEditor.insertText('- [ ] ');
+      sourceEditor.toggleTaskMarkerAtLineStart();
     } else if (richEditor) {
-      richEditor.insertMarkdown('- [ ] ');
+      const target = richEditor.getTaskToggleTarget(content);
+      pendingNavigationAnchor = { kind: 'cursor', anchor: richEditor.getSourceLineAnchor(target.editorLine) };
+      updateContent(toggleTaskMarkerOnLine(content, target.documentLine, { preserveEmptyParagraph: true }));
+      await tick();
+      restorePendingNavigation();
     } else {
-      content = `${content}${content.endsWith('\n') || !content ? '' : '\n'}- [ ] `;
+      updateContent(toggleTaskMarkerOnLine(content, 1));
+    }
+  }
+
+  function currentTimestampLabel(): string {
+    const now = new Date();
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    return `${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${minutes}`;
+  }
+
+  function insertCurrentTime(): void {
+    const timestamp = currentTimestampLabel();
+    const markdown = `<span data-topplan-time="${timestamp}">${timestamp}</span>`;
+    if (sourceMode && sourceEditor) {
+      sourceEditor.insertText(` ${markdown} `);
+    } else if (richEditor) {
+      richEditor.insertTimestamp(timestamp);
+    } else {
+      const separator = content && !content.endsWith('\n') && !content.endsWith(' ') ? ' ' : '';
+      content = `${content}${separator}${markdown} `;
       scheduleSave();
     }
   }
@@ -803,7 +918,7 @@
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (target?.closest('button, input, select, textarea, a')) {
+    if (target?.closest('button, input, select, textarea, a, .document-title')) {
       return;
     }
     try {
@@ -828,7 +943,7 @@
     if (!target) {
       return;
     }
-    if (target.closest('.file-sidebar, .settings-popover, .sidebar-toggle, .settings-toggle')) {
+    if (target.closest('.file-sidebar, .settings-popover, .sidebar-toggle, .settings-toggle, .app-menu-toggle')) {
       return;
     }
     if (sidebarOpen) {
@@ -942,6 +1057,30 @@
   }
 
   onMount(() => {
+    if (import.meta.env.DEV) {
+      const testWindow = window as Window & { __TOPPLAN_TEST__?: TopPlanTestApi };
+      testWindow.__TOPPLAN_TEST__ = {
+        async setDocument(markdown: string) {
+          const path = '__topplan_test__/test.md';
+          settings = cloneSettings({ workspaceRoot: '__topplan_test__', activeFilePath: path });
+          files = [{ name: 'test.md', path, modifiedAt: new Date(0).toISOString(), size: markdown.length, isActive: true }];
+          images = [];
+          content = markdown;
+          dirty = false;
+          loading = false;
+          desktopPreview = false;
+          sourceMode = false;
+          await tick();
+        },
+        getContent() {
+          return content;
+        },
+        getRichDebugSnapshot() {
+          return richEditor?.getDebugSnapshot() ?? null;
+        },
+      };
+    }
+
     void loadApp();
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenMiniSettings: (() => void) | null = null;
@@ -981,6 +1120,10 @@
     window.addEventListener('paste', pasteListener);
     window.addEventListener('wheel', wheelListener, { capture: true, passive: false });
     return () => {
+      if (import.meta.env.DEV) {
+        const testWindow = window as Window & { __TOPPLAN_TEST__?: TopPlanTestApi };
+        delete testWindow.__TOPPLAN_TEST__;
+      }
       window.removeEventListener('beforeunload', beforeUnload);
       window.removeEventListener('paste', pasteListener);
       window.removeEventListener('wheel', wheelListener, { capture: true });
@@ -1031,12 +1174,25 @@
   {:else}
   <header class="titlebar" role="toolbar" aria-label="TopPlan window controls" tabindex="-1" data-tauri-drag-region onpointerdown={handleTitlePointerDown}>
     <div class="identity" data-tauri-drag-region>
-      <div class="mark" data-tauri-drag-region>
-        <img src="/topplan-icon.svg" alt="" />
-      </div>
+      <button class:active={sidebarOpen} class="mark app-menu-toggle" title={sidebarOpen ? text.hideSidebar : text.showSidebar} onclick={() => (sidebarOpen = !sidebarOpen)}>
+        <img src="/topplan-icon-title.png" alt="" />
+      </button>
       <div class="identity-copy" data-tauri-drag-region>
         <h1 data-tauri-drag-region>TopPlan</h1>
-        <p data-tauri-drag-region>{activeFile?.name ?? text.subtitle}</p>
+        {#if renamingTitle}
+          <input
+            bind:this={titleInput}
+            bind:value={titleDraft}
+            class="title-rename-input document-title"
+            aria-label={text.renameFile}
+            onblur={commitTitleRename}
+            onkeydown={handleTitleRenameKeydown}
+          />
+        {:else}
+          <button class="document-title" title={text.renameFileHint} ondblclick={startTitleRename}>
+            {activeFile?.name ?? text.subtitle}
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -1116,7 +1272,14 @@
 
       <section class="document-surface" onscroll={revealScrollbars}>
         {#if sourceMode}
-          <CodeMirrorEditor bind:this={sourceEditor} value={content} {zoom} onChange={updateContent} onReady={restorePendingNavigation} />
+          <CodeMirrorEditor
+            bind:this={sourceEditor}
+            value={content}
+            activeFilePath={settings.activeFilePath}
+            {zoom}
+            onChange={updateContent}
+            onReady={restorePendingNavigation}
+          />
         {:else}
           <RichMarkdownEditor
             bind:this={richEditor}
@@ -1146,6 +1309,9 @@
         </button>
         <button class="bottom-icon" title={text.insertTask} onclick={insertTaskCheckbox}>
           <SquarePlus size={15} />
+        </button>
+        <button class="bottom-icon" title={text.insertCurrentTime} onclick={insertCurrentTime}>
+          <Clock3 size={15} />
         </button>
       </div>
 

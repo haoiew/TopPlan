@@ -171,27 +171,43 @@ button {
 
 .mark {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   flex: 0 0 auto;
   place-items: center;
+  border: 0;
   border-radius: 8px;
-  background: linear-gradient(135deg, #69bdff, #2f9fff);
+  background: transparent;
   color: #fff;
+  cursor: pointer;
   font-size: 11px;
   font-weight: 760;
   letter-spacing: 0;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+  padding: 0;
+  box-shadow: none;
+  transition:
+    filter 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.mark:hover,
+.mark.active {
+  filter: brightness(1.04) saturate(1.04);
+  box-shadow: 0 3px 10px rgba(60, 144, 220, 0.14);
 }
 
 .mark img {
   width: 100%;
   height: 100%;
   display: block;
+  object-fit: contain;
   filter: var(--icon-filter);
 }
 
 .identity-copy {
+  display: grid;
+  gap: 1px;
   min-width: 0;
 }
 
@@ -208,14 +224,43 @@ button {
   line-height: 1.1;
 }
 
-.identity p {
+.document-title {
   max-width: 250px;
+  min-width: 0;
+  height: 16px;
+  border: 0;
   overflow: hidden;
+  background: transparent;
   color: var(--muted);
+  cursor: text;
   font-size: 11px;
   line-height: 1.35;
+  padding: 0;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.document-title:hover {
+  color: color-mix(in srgb, var(--accent-strong) 60%, var(--muted));
+}
+
+.title-rename-input {
+  width: min(250px, 52vw);
+  height: 19px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 17px;
+  padding: 0 5px;
+}
+
+.title-rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .window-actions,
@@ -506,7 +551,7 @@ input[type='checkbox']:checked {
   width: calc(100vw - 6px);
   height: calc(100vh - 6px);
   margin: 3px;
-  padding: 19px 14px 13px 20px;
+  padding: 19px 6px 13px 20px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--line-strong) 54%, transparent);
   border-radius: 6px;
@@ -538,7 +583,7 @@ input[type='checkbox']:checked {
   flex: 1;
   overflow: auto;
   box-sizing: border-box;
-  padding: 0;
+  padding: 0 8px 0 0;
   color: var(--ink);
   font-size: clamp(11px, 4.8vw, 14px);
   line-height: 1.48;
@@ -618,11 +663,11 @@ input[type='checkbox']:checked {
 }
 
 .mini-exit {
-  right: 52px;
+  right: 44px;
 }
 
 .mini-close {
-  right: 33px;
+  right: 25px;
 }
 
 .mini-note-shell:hover .mini-exit,
@@ -649,7 +694,7 @@ input[type='checkbox']:checked {
 
 .mini-move-zone {
   top: 3px;
-  right: 79px;
+  right: 71px;
   left: 16px;
   z-index: 4;
   height: 13px;
@@ -793,6 +838,34 @@ input[type='checkbox']:checked {
   margin: 0.52em 0;
 }
 
+.rich-editor-host .ProseMirror p[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h1[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h2[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h3[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h4[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h5[data-topplan-visual-indent],
+.rich-editor-host .ProseMirror h6[data-topplan-visual-indent] {
+  position: relative;
+}
+
+.rich-editor-host .ProseMirror p[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h1[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h2[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h3[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h4[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h5[data-topplan-visual-indent]::before,
+.rich-editor-host .ProseMirror h6[data-topplan-visual-indent]::before {
+  content: '';
+  position: absolute;
+  top: 0.14em;
+  bottom: 0.14em;
+  left: -0.68em;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
 .rich-editor-host .ProseMirror ul,
 .rich-editor-host .ProseMirror ol {
   margin: 0.35em 0 1.2em;
@@ -815,8 +888,8 @@ input[type='checkbox']:checked {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  min-height: 1.72em;
-  margin: 0.46em 0;
+  min-height: 1.5em;
+  margin: 0.2em 0;
   padding-left: 0;
   opacity: 1;
   transition:
@@ -833,7 +906,7 @@ input[type='checkbox']:checked {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  min-height: 1.72em;
+  min-height: 1.5em;
 }
 
 .rich-editor-host .ProseMirror ul[data-type='taskList'] > li > div,
@@ -876,6 +949,7 @@ input[type='checkbox']:checked {
 
 .rich-editor-host .ProseMirror ul[data-type='taskList'],
 .rich-editor-host .ProseMirror ul[data-type='task-list'] {
+  margin: 0.22em 0 0.42em;
   padding-left: 1.05em;
 }
 
@@ -931,6 +1005,32 @@ input[type='checkbox']:checked {
   padding: 2px 5px;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 0.9em;
+}
+
+.rich-editor-host .ProseMirror [data-topplan-time] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55em;
+  margin: 0 0.16em;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+  color: color-mix(in srgb, var(--muted) 84%, var(--ink));
+  cursor: text;
+  font-size: 0.78em;
+  font-weight: 520;
+  line-height: 1.2;
+  padding: 0.12em 0.52em;
+  user-select: all;
+  vertical-align: 0.08em;
+  white-space: nowrap;
+}
+
+.rich-editor-host .ProseMirror [data-topplan-time].ProseMirror-selectednode {
+  border-color: color-mix(in srgb, var(--accent-strong) 70%, var(--line-strong));
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  color: color-mix(in srgb, var(--ink) 72%, var(--accent-strong));
 }
 
 .rich-editor-host .ProseMirror pre {
@@ -1480,7 +1580,7 @@ input[type='checkbox']:checked {
 }
 
 @media (max-width: 560px) {
-  .identity p {
+  .document-title {
     max-width: 150px;
   }
 

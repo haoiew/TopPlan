@@ -5,6 +5,16 @@ export type SourceLineAnchor = {
   kind: 'block' | 'code';
 };
 
+export type RichSourceLineAnchor = SourceLineAnchor & {
+  blank: boolean;
+};
+
+const TASK_MARKER_AT_LINE_START = /^(\s*)[-*+]\s+\[[ xX]\](?:\s+|$)/;
+const EMPTY_TASK_ENTITY_LINE = /^(\s*[-*+]\s+\[[ xX]\]\s*)&nbsp;\s*$/i;
+const BLANK_ENTITY_LINE = /^\s*(?:&nbsp;|\u00a0)\s*$/i;
+const ACCIDENTAL_ORDERED_LIST_MARKER = /^(\s*\d+)([.)])(\s+)/;
+const ACCIDENTAL_BULLET_LIST_MARKER = /^(\s*)([-*+])(\s+)/;
+
 type FencedCode = {
   language: string | null;
   text: string;
@@ -103,6 +113,112 @@ export function normalizeMarkdownDocumentForRichEditor(doc: JSONContent): JSONCo
   return normalizeNode(doc);
 }
 
+function normalizeEscapedInlineMarkdownSegment(text: string): string {
+  return text
+    .replace(/\\\*\\\*((?=\S)(?:[\s\S]*?\S))\\\*\\\*/g, '**$1**')
+    .replace(/\\_\\_((?=\S)(?:[\s\S]*?\S))\\_\\_/g, '__$1__');
+}
+
+function normalizeEscapedInlineMarkdownLine(line: string): string {
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < line.length) {
+    const opening = line.slice(cursor).match(/`+/);
+    if (!opening || opening.index === undefined) {
+      output += normalizeEscapedInlineMarkdownSegment(line.slice(cursor));
+      break;
+    }
+
+    const openingStart = cursor + opening.index;
+    const marker = opening[0];
+    output += normalizeEscapedInlineMarkdownSegment(line.slice(cursor, openingStart));
+
+    const closingStart = line.indexOf(marker, openingStart + marker.length);
+    if (closingStart === -1) {
+      output += line.slice(openingStart);
+      break;
+    }
+
+    const codeEnd = closingStart + marker.length;
+    output += line.slice(openingStart, codeEnd);
+    cursor = codeEnd;
+  }
+
+  return output;
+}
+
+export function normalizeEscapedInlineMarkdown(markdown: string): string {
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  let activeFence: string | null = null;
+
+  return lines
+    .map((line) => {
+      if (activeFence) {
+        const closingFence = fenceMarker(line);
+        if (closingFence?.startsWith(activeFence)) {
+          activeFence = null;
+        }
+        return line;
+      }
+
+      const openingFence = fenceMarker(line);
+      if (openingFence) {
+        activeFence = openingFence;
+        return line;
+      }
+
+      return normalizeEscapedInlineMarkdownLine(line);
+    })
+    .join('\n');
+}
+
+export function isBlankishMarkdownLine(line: string): boolean {
+  return line.trim() === '' || BLANK_ENTITY_LINE.test(line);
+}
+
+function escapeAccidentalListMarker(line: string): string {
+  if (ACCIDENTAL_ORDERED_LIST_MARKER.test(line)) {
+    return line.replace(ACCIDENTAL_ORDERED_LIST_MARKER, '$1\\$2$3');
+  }
+  if (ACCIDENTAL_BULLET_LIST_MARKER.test(line)) {
+    return line.replace(ACCIDENTAL_BULLET_LIST_MARKER, '$1\\$2$3');
+  }
+  return line;
+}
+
+export function toggleTaskMarkerOnLine(
+  markdown: string,
+  lineNumber: number,
+  { preserveEmptyParagraph = false }: { preserveEmptyParagraph?: boolean } = {}
+): string {
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  const index = Math.min(Math.max(1, lineNumber), Math.max(lines.length, 1)) - 1;
+  const line = lines[index] ?? '';
+
+  const taskMarker = line.match(TASK_MARKER_AT_LINE_START);
+  if (taskMarker) {
+    const remainingText = line.slice(taskMarker[0].length);
+    if (isBlankishMarkdownLine(remainingText)) {
+      lines[index] = preserveEmptyParagraph ? `${taskMarker[1]}&nbsp;` : taskMarker[1];
+      return lines.join('\n');
+    }
+    lines[index] = escapeAccidentalListMarker(`${taskMarker[1]}${remainingText}`);
+    return lines.join('\n');
+  }
+
+  lines[index] = isBlankishMarkdownLine(line) ? '- [ ] ' : line.replace(/^(\s*)/, '$1- [ ] ');
+  return lines.join('\n');
+}
+
+export function normalizeSerializedTaskMarkers(markdown: string): string {
+  return markdown
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(EMPTY_TASK_ENTITY_LINE, '$1'))
+    .join('\n');
+}
+
 function fenceMarker(line: string): string | null {
   return line.trimStart().match(/^(`{3,}|~{3,})/)?.[1] ?? null;
 }
@@ -122,19 +238,13 @@ function isBlockStartLine(line: string): boolean {
   );
 }
 
-export function sourceLineAnchors(markdown: string): SourceLineAnchor[] {
+export function sourceLineAnchorsForRichBlocks(markdown: string): RichSourceLineAnchor[] {
   const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
-  const anchors: SourceLineAnchor[] = [];
+  const anchors: RichSourceLineAnchor[] = [];
   let inParagraph = false;
   let activeFence: string | null = null;
 
   lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    if (trimmed === '') {
-      inParagraph = false;
-      return;
-    }
-
     if (activeFence) {
       const closingFence = fenceMarker(line);
       if (closingFence?.startsWith(activeFence)) {
@@ -145,17 +255,29 @@ export function sourceLineAnchors(markdown: string): SourceLineAnchor[] {
 
     const openingFence = fenceMarker(line);
     if (openingFence) {
-      anchors.push({ line: index + 1, kind: 'code' });
+      anchors.push({ line: index + 1, kind: 'code', blank: false });
       activeFence = openingFence;
       inParagraph = false;
       return;
     }
 
+    if (isBlankishMarkdownLine(line)) {
+      anchors.push({ line: index + 1, kind: 'block', blank: true });
+      inParagraph = false;
+      return;
+    }
+
     if (!inParagraph || isBlockStartLine(line)) {
-      anchors.push({ line: index + 1, kind: 'block' });
+      anchors.push({ line: index + 1, kind: 'block', blank: false });
     }
     inParagraph = !isBlockStartLine(line);
   });
 
   return anchors;
+}
+
+export function sourceLineAnchors(markdown: string): SourceLineAnchor[] {
+  return sourceLineAnchorsForRichBlocks(markdown)
+    .filter((anchor) => !anchor.blank)
+    .map(({ line, kind }) => ({ line, kind }));
 }

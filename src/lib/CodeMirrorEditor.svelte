@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+  import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirror/commands';
   import { markdown } from '@codemirror/lang-markdown';
   import { bracketMatching, defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language';
-  import { EditorState } from '@codemirror/state';
+  import { EditorState, Transaction } from '@codemirror/state';
   import {
     drawSelection,
     dropCursor,
@@ -13,12 +13,16 @@
     keymap,
     lineNumbers,
   } from '@codemirror/view';
+  import { toggleTaskMarkerOnLine } from './markdownView';
 
   export let value = '';
   export let editable = true;
+  export let activeFilePath: string | null = null;
   export let zoom = 1;
   export let onChange: (value: string) => void = () => {};
   export let onReady: () => void = () => {};
+
+  const SOURCE_INDENT = '  ';
 
   type CursorAnchor = {
     line: number;
@@ -27,10 +31,16 @@
 
   let host: HTMLDivElement;
   let view: EditorView | null = null;
+  let currentStateKey = stateKey(activeFilePath);
   let hasExplicitCursorAnchor = false;
   let lastCursorAnchor: CursorAnchor | null = null;
   let preserveCursorAnchorUntil = 0;
   let pendingScrollTimers: number[] = [];
+  const statesByFile = new Map<string, EditorState>();
+
+  function stateKey(path: string | null): string {
+    return path ?? '__topplan_active_document__';
+  }
 
   function handleEditorScroll(): void {
     view?.requestMeasure();
@@ -98,7 +108,7 @@
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       highlightActiveLine(),
       EditorView.editable.of(editable),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
+      keymap.of([{ key: 'Tab', preventDefault: true, run: indentCurrentSourceLine }, ...defaultKeymap, ...historyKeymap]),
       EditorView.updateListener.of((update) => {
         if ((update.selectionSet || update.docChanged) && update.view.hasFocus) {
           rememberCursorAnchor();
@@ -130,6 +140,20 @@
     ];
   }
 
+  function buildState(doc: string): EditorState {
+    return EditorState.create({
+      doc,
+      extensions: buildExtensions(),
+    });
+  }
+
+  function saveCurrentState(): void {
+    if (!view) {
+      return;
+    }
+    statesByFile.set(currentStateKey, view.state);
+  }
+
   export function insertText(text: string): void {
     if (!view) {
       return;
@@ -138,6 +162,48 @@
     view.dispatch({
       changes: { from: selection.from, to: selection.to, insert: text },
       selection: { anchor: selection.from + text.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+  }
+
+  function indentCurrentSourceLine(): boolean {
+    if (!view || !editable) {
+      return false;
+    }
+    const selection = view.state.selection.main;
+    const line = view.state.doc.lineAt(selection.head);
+    view.dispatch({
+      changes: { from: line.from, insert: SOURCE_INDENT },
+      selection: {
+        anchor: selection.anchor + SOURCE_INDENT.length,
+        head: selection.head + SOURCE_INDENT.length,
+      },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  export function toggleTaskMarkerAtLineStart(): void {
+    if (!view) {
+      return;
+    }
+    const selection = view.state.selection.main;
+    const line = view.state.doc.lineAt(selection.head);
+    const lineText = view.state.sliceDoc(line.from, line.to);
+    const nextLineText = toggleTaskMarkerOnLine(lineText, 1);
+    if (nextLineText === lineText) {
+      view.focus();
+      return;
+    }
+
+    const insertedLength = nextLineText.length - lineText.length;
+    const cursorOffset = selection.head - line.from;
+    const nextCursorOffset = Math.min(nextLineText.length, Math.max(0, cursorOffset + insertedLength));
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: nextLineText },
+      selection: { anchor: line.from + nextCursorOffset },
       scrollIntoView: true,
     });
     view.focus();
@@ -306,15 +372,25 @@
 
   onMount(() => {
     view = new EditorView({
-      state: EditorState.create({
-        doc: value,
-        extensions: buildExtensions(),
-      }),
+      state: buildState(value),
       parent: host,
     });
+    statesByFile.set(currentStateKey, view.state);
     view.scrollDOM.addEventListener('scroll', handleEditorScroll, { passive: true });
     onReady();
   });
+
+  $: if (view && stateKey(activeFilePath) !== currentStateKey) {
+    const previousState = view.state;
+    saveCurrentState();
+    currentStateKey = stateKey(activeFilePath);
+    hasExplicitCursorAnchor = false;
+    lastCursorAnchor = null;
+    const cachedState = statesByFile.get(currentStateKey);
+    const nextState = cachedState && cachedState.doc.toString() === value ? cachedState : previousState.doc.toString() === value ? previousState : buildState(value);
+    statesByFile.set(currentStateKey, nextState);
+    view.setState(nextState);
+  }
 
   $: if (view && value !== view.state.doc.toString()) {
     hasExplicitCursorAnchor = false;
@@ -325,7 +401,9 @@
         to: view.state.doc.length,
         insert: value,
       },
+      annotations: [Transaction.addToHistory.of(false), isolateHistory.of('full')],
     });
+    statesByFile.set(currentStateKey, view.state);
   }
 
   $: if (host) {
@@ -333,6 +411,7 @@
   }
 
   onDestroy(() => {
+    saveCurrentState();
     clearPendingScrollTimers();
     view?.scrollDOM.removeEventListener('scroll', handleEditorScroll);
     view?.destroy();
