@@ -46,7 +46,6 @@
     closeWindow,
     createMarkdownFile,
     getSettings,
-    getWindowInnerSize,
     hideWindow,
     isTauriRuntime,
     listMarkdownFiles,
@@ -56,6 +55,7 @@
     onMiniNoteSettingsChanged,
     onOpenFileInMain,
     openFileInMain,
+    openMiniNotePair,
     openMiniNoteWindow,
     readMarkdownFile,
     readLocalImageDataUrl,
@@ -66,9 +66,9 @@
     scanImageReferences,
     selectWorkspaceDir,
     setAlwaysOnTop,
+    setMainSplitOpen,
     setMiniNoteClickThrough,
     setWindowShadow,
-    setWindowInnerSize,
     setWindowSizeLimits,
     startWindowDrag,
     startWindowResize,
@@ -97,6 +97,7 @@
     getLeftContent: () => string;
     createDailyMarkdown: (previousMarkdown: string | null, date: string) => string;
     isOfficialChineseWorkday: (date: string) => boolean;
+    getMiniNotePaths: () => string[];
     getRichDebugSnapshot: () => unknown;
   };
 
@@ -682,11 +683,7 @@
       return;
     }
     try {
-      await setWindowSizeLimits(620, 360);
-      const size = await getWindowInnerSize();
-      if (size.width < 720) {
-        await setWindowInnerSize(720, Math.max(size.height, 560));
-      }
+      await setMainSplitOpen(true);
     } catch (error) {
       setError(error);
     }
@@ -697,7 +694,7 @@
       return;
     }
     try {
-      await setWindowSizeLimits();
+      await setMainSplitOpen(false);
     } catch (error) {
       setError(error);
     }
@@ -900,15 +897,19 @@
 
   async function enterMiniMode(): Promise<void> {
     if (isTauriRuntime) {
-      const path = activePane === 'left' && splitOpen ? settings.splitView.leftFilePath : settings.activeFilePath;
-      if (!path) {
+      const paths = currentMiniNotePaths();
+      if (paths.length === 0) {
         return;
       }
       if (!(await flushAllSaves())) {
         return;
       }
       try {
-        await openMiniNoteWindow(path);
+        if (paths.length === 2) {
+          await openMiniNotePair(paths as [string, string]);
+        } else {
+          await openMiniNoteWindow(paths[0]);
+        }
       } catch (error) {
         setError(error);
       }
@@ -930,6 +931,13 @@
     await delay(transitionDuration());
     miniMode = true;
     transitionMode = 'mini';
+  }
+
+  function currentMiniNotePaths(): string[] {
+    if (splitOpen && settings.splitView.leftFilePath && settings.activeFilePath) {
+      return [settings.splitView.leftFilePath, settings.activeFilePath];
+    }
+    return settings.activeFilePath ? [settings.activeFilePath] : [];
   }
 
   async function openFileAsMiniNote(path: string, event?: MouseEvent): Promise<void> {
@@ -1469,6 +1477,9 @@
           const [year, month, day] = date.split('-').map(Number);
           return isOfficialChineseWorkday(new Date(year, month - 1, day));
         },
+        getMiniNotePaths() {
+          return currentMiniNotePaths();
+        },
         getRichDebugSnapshot() {
           return richEditor?.getDebugSnapshot() ?? null;
         },
@@ -1678,7 +1689,7 @@
       </button>
     </section>
   {:else}
-    <section class:sidebar-open={sidebarOpen} class="workspace-main">
+    <section class:sidebar-open={sidebarOpen} class:split-open={splitOpen} class="workspace-main">
       {#if sidebarOpen}
         <aside class="file-sidebar">
           <div class="file-create">

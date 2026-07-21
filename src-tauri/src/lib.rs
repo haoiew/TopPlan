@@ -19,8 +19,7 @@ use windows::core::BOOL;
 use windows::Win32::{
     Foundation::{HWND, LPARAM},
     UI::WindowsAndMessaging::{
-        EnumChildWindows, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
+        EnumChildWindows, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW, GWL_EXSTYLE,
         WS_EX_TRANSPARENT,
     },
 };
@@ -44,7 +43,18 @@ const MINI_CONTROL_TOP_OFFSET: i32 = 10;
 struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
 
 #[derive(Default)]
-struct ClickThroughWindowRegistry(Mutex<HashMap<String, Vec<(isize, isize)>>>);
+struct ClickThroughWindowRegistry(Mutex<HashMap<String, HashMap<isize, isize>>>);
+
+#[derive(Clone, Copy)]
+struct MainWindowFrame {
+    x: i32,
+    y: i32,
+    inner_width: u32,
+    inner_height: u32,
+}
+
+#[derive(Default)]
+struct SplitWindowFrameRegistry(Mutex<Option<MainWindowFrame>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -683,19 +693,62 @@ fn save_pasted_image(active_file_path: String, bytes: Vec<u8>, extension: String
     Ok(format!("picture/{file_name}"))
 }
 
-#[tauri::command]
-async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindowRegistry>, path: String) -> Result<(), String> {
+fn paired_mini_note_positions(app: &AppHandle) -> Option<[(f64, f64); 2]> {
+    let (area_x, area_y, area_width, _area_height) = main_monitor_work_area_logical(app)?;
+    let pair_width = MINI_WINDOW_WIDTH * 2.0 + MINI_WINDOW_GAP;
+    let start_x = (area_x + area_width - pair_width - MINI_WINDOW_MARGIN).max(area_x + MINI_WINDOW_MARGIN);
+    let y = area_y + MINI_WINDOW_MARGIN;
+    Some([(start_x, y), (start_x + MINI_WINDOW_WIDTH + MINI_WINDOW_GAP, y)])
+}
+
+fn open_mini_note_window_internal(
+    app: &AppHandle,
+    registry: &MiniNoteWindowRegistry,
+    path: String,
+    preferred_position: Option<(f64, f64)>,
+    toggle_existing: bool,
+    focus: bool,
+) -> Result<(), String> {
     let markdown_path = PathBuf::from(&path);
     if !markdown_path.exists() || !is_markdown(&markdown_path) {
         return Err("Only existing Markdown files can be opened as mini notes.".to_string());
     }
     let normalized_path = normalize(&markdown_path);
 
-    if let Some(existing_label) = registry.0.lock().map_err(|error| error.to_string())?.remove(&normalized_path) {
+    let existing_label = registry
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&normalized_path)
+        .cloned();
+    if let Some(existing_label) = existing_label {
         if let Some(existing_window) = app.get_webview_window(&existing_label) {
-            existing_window.close().map_err(|error| error.to_string())?;
+            if toggle_existing {
+                registry
+                    .0
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .remove(&normalized_path);
+                existing_window.close().map_err(|error| error.to_string())?;
+                return Ok(());
+            }
+            if let Some((x, y)) = preferred_position {
+                existing_window
+                    .set_position(Position::Logical(LogicalPosition::new(x, y)))
+                    .map_err(|error| error.to_string())?;
+            }
+            existing_window.show().map_err(|error| error.to_string())?;
+            existing_window.unminimize().map_err(|error| error.to_string())?;
+            if focus {
+                existing_window.set_focus().map_err(|error| error.to_string())?;
+            }
             return Ok(());
         }
+        registry
+            .0
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(&normalized_path);
     }
 
     let open_count = registry.0.lock().map_err(|error| error.to_string())?.len();
@@ -703,12 +756,14 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_millis();
-    let label = format!("mini-note-{timestamp}");
+    let label = format!("mini-note-{timestamp}-{open_count}");
     let encoded_path = general_purpose::URL_SAFE_NO_PAD.encode(path.as_bytes());
     let fallback_offset = open_count as f64 * MINI_WINDOW_GAP;
-    let (x, y) = mini_note_window_position(&app, open_count).unwrap_or((72.0 + fallback_offset, 72.0));
+    let (x, y) = preferred_position
+        .or_else(|| mini_note_window_position(app, open_count))
+        .unwrap_or((72.0 + fallback_offset, 72.0));
     let window = WebviewWindowBuilder::new(
-        &app,
+        app,
         label,
         WebviewUrl::App(format!("index.html?topplanMode=mini&file={encoded_path}").into()),
     )
@@ -723,14 +778,16 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(true)
-    .focused(true)
+    .focused(focus)
     .shadow(false)
     .build()
     .map_err(|error| error.to_string())?;
 
     window.show().map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
 
     registry
         .0
@@ -743,6 +800,15 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
         match event {
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 let _ = position_mini_control(&app_for_close, &parent_label);
+                #[cfg(target_os = "windows")]
+                if let Some(parent) = app_for_close.get_webview_window(&parent_label) {
+                    let click_registry = app_for_close.state::<ClickThroughWindowRegistry>();
+                    if let Ok(mut windows) = click_registry.0.lock() {
+                        if let Some(baselines) = windows.get_mut(&parent_label) {
+                            let _ = sync_native_child_click_through(&parent, baselines, true);
+                        }
+                    };
+                }
             }
             WindowEvent::Destroyed | WindowEvent::CloseRequested { .. } => {
                 let registry = app_for_close.state::<MiniNoteWindowRegistry>();
@@ -760,6 +826,41 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
             _ => {}
         }
     });
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_mini_note_window(
+    app: AppHandle,
+    registry: State<'_, MiniNoteWindowRegistry>,
+    path: String,
+) -> Result<(), String> {
+    open_mini_note_window_internal(&app, &registry, path, None, true, true)
+}
+
+#[tauri::command]
+async fn open_mini_note_pair(
+    app: AppHandle,
+    registry: State<'_, MiniNoteWindowRegistry>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    if paths.len() != 2 || paths[0] == paths[1] {
+        return Err("Split mini note mode requires two different Markdown files.".to_string());
+    }
+    let positions = paired_mini_note_positions(&app).unwrap_or([
+        (72.0, 72.0),
+        (72.0 + MINI_WINDOW_WIDTH + MINI_WINDOW_GAP, 72.0),
+    ]);
+    for (index, path) in paths.into_iter().enumerate() {
+        open_mini_note_window_internal(
+            &app,
+            &registry,
+            path,
+            Some(positions[index]),
+            false,
+            index == 1,
+        )?;
+    }
     Ok(())
 }
 
@@ -789,9 +890,9 @@ fn position_mini_control(app: &AppHandle, parent_label: &str) -> Result<(), Stri
 
 #[cfg(target_os = "windows")]
 fn click_through_style(style: isize) -> isize {
+    // WebView2 child HWNDs keep their native composition flags; only add hit-test transparency.
     let transparent = WS_EX_TRANSPARENT.0 as isize;
-    let layered = WS_EX_LAYERED.0 as isize;
-    style | transparent | layered
+    style | transparent
 }
 
 #[cfg(target_os = "windows")]
@@ -819,20 +920,25 @@ fn native_child_window_handles<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "windows")]
-fn apply_native_window_style(handle: isize, style: isize) -> Result<(), String> {
-    let hwnd = HWND(handle as _);
+fn apply_native_window_style(handle: isize, style: isize) {
     unsafe {
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
-        SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-        )
-        .map_err(|error| error.to_string())?;
+        SetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE, style);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sync_native_child_click_through<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    baselines: &mut HashMap<isize, isize>,
+    enabled: bool,
+) -> Result<(), String> {
+    for handle in native_child_window_handles(window)? {
+        let current = unsafe { GetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE) };
+        let baseline = *baselines.entry(handle).or_insert(current);
+        let desired = if enabled { click_through_style(baseline) } else { baseline };
+        if current != desired {
+            apply_native_window_style(handle, desired);
+        }
     }
     Ok(())
 }
@@ -840,36 +946,119 @@ fn apply_native_window_style(handle: isize, style: isize) -> Result<(), String> 
 #[cfg(target_os = "windows")]
 fn enable_native_click_through<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
-) -> Result<Vec<(isize, isize)>, String> {
-    let styles = native_child_window_handles(window)?
-        .into_iter()
-        .map(|handle| {
-            let style = unsafe { GetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE) };
-            (handle, style)
-        })
-        .collect::<Vec<_>>();
-
+) -> Result<HashMap<isize, isize>, String> {
+    let mut baselines = HashMap::new();
     window
         .set_ignore_cursor_events(true)
         .map_err(|error| error.to_string())?;
-    for (handle, style) in &styles {
-        if let Err(error) = apply_native_window_style(*handle, click_through_style(*style)) {
-            let _ = restore_native_window_styles(&styles);
-            let _ = window.set_ignore_cursor_events(false);
-            return Err(error);
-        }
+    if let Err(error) = sync_native_child_click_through(window, &mut baselines, true) {
+        let _ = window.set_ignore_cursor_events(false);
+        return Err(error);
     }
-    Ok(styles)
+    Ok(baselines)
 }
 
 #[cfg(target_os = "windows")]
-fn restore_native_window_styles(styles: &[(isize, isize)]) -> Result<(), String> {
+fn restore_native_window_styles(styles: &HashMap<isize, isize>) {
     for (handle, style) in styles {
         let hwnd = HWND(*handle as _);
         if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-            apply_native_window_style(*handle, *style)?;
+            apply_native_window_style(*handle, *style);
         }
     }
+}
+
+fn expanded_split_geometry(
+    window_x: i32,
+    inner_width: u32,
+    outer_width: u32,
+    work_x: i32,
+    work_width: u32,
+) -> (i32, u32) {
+    let desired_outer_width = outer_width.saturating_add(inner_width);
+    let expanded_outer_width = desired_outer_width.min(work_width).max(outer_width);
+    let expanded_inner_width = inner_width.saturating_add(expanded_outer_width.saturating_sub(outer_width));
+    let work_right = work_x.saturating_add(work_width as i32);
+    let expanded_right = window_x.saturating_add(expanded_outer_width as i32);
+    let expanded_x = if expanded_right > work_right {
+        work_right.saturating_sub(expanded_outer_width as i32).max(work_x)
+    } else {
+        window_x.max(work_x)
+    };
+    (expanded_x, expanded_inner_width)
+}
+
+#[tauri::command]
+fn set_main_split_open(
+    app: AppHandle,
+    registry: State<'_, SplitWindowFrameRegistry>,
+    open: bool,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    if open {
+        if registry.0.lock().map_err(|error| error.to_string())?.is_some() {
+            return Ok(());
+        }
+        let position = window.outer_position().map_err(|error| error.to_string())?;
+        let inner_size = window.inner_size().map_err(|error| error.to_string())?;
+        let outer_size = window.outer_size().map_err(|error| error.to_string())?;
+        let monitor = window
+            .current_monitor()
+            .map_err(|error| error.to_string())?
+            .or_else(|| app.primary_monitor().ok().flatten());
+        let Some(monitor) = monitor else {
+            return Ok(());
+        };
+        let work_area = monitor.work_area();
+        let (expanded_x, expanded_inner_width) = expanded_split_geometry(
+            position.x,
+            inner_size.width,
+            outer_size.width,
+            work_area.position.x,
+            work_area.size.width,
+        );
+        let original = MainWindowFrame {
+            x: position.x,
+            y: position.y,
+            inner_width: inner_size.width,
+            inner_height: inner_size.height,
+        };
+        *registry.0.lock().map_err(|error| error.to_string())? = Some(original);
+        if let Err(error) = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+            expanded_inner_width,
+            inner_size.height,
+        ))) {
+            *registry.0.lock().map_err(|lock_error| lock_error.to_string())? = None;
+            return Err(error.to_string());
+        }
+        if let Err(error) = window.set_position(Position::Physical(PhysicalPosition::new(expanded_x, position.y))) {
+            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                inner_size.width,
+                inner_size.height,
+            )));
+            *registry.0.lock().map_err(|lock_error| lock_error.to_string())? = None;
+            return Err(error.to_string());
+        }
+        return Ok(());
+    }
+
+    let original = *registry.0.lock().map_err(|error| error.to_string())?;
+    let Some(original) = original else {
+        return Ok(());
+    };
+    window
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+            original.inner_width,
+            original.inner_height,
+        )))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_position(Position::Physical(PhysicalPosition::new(original.x, original.y)))
+        .map_err(|error| error.to_string())?;
+    *registry.0.lock().map_err(|error| error.to_string())? = None;
     Ok(())
 }
 
@@ -924,6 +1113,10 @@ fn set_mini_note_click_through(
         #[cfg(target_os = "windows")]
         {
             if already_enabled {
+                let mut windows = click_registry.0.lock().map_err(|error| error.to_string())?;
+                if let Some(baselines) = windows.get_mut(&parent_label) {
+                    sync_native_child_click_through(&parent, baselines, true)?;
+                }
                 app.emit_to(&parent_label, "mini-note-click-through-changed", true)
                     .map_err(|error| error.to_string())?;
                 return Ok(());
@@ -942,7 +1135,7 @@ fn set_mini_note_click_through(
                     windows.insert(parent_label.clone(), styles);
                 }
                 Err(error) => {
-                    let _ = restore_native_window_styles(&styles);
+                    restore_native_window_styles(&styles);
                     let _ = parent.set_ignore_cursor_events(false);
                     if let Some(control) = app.get_webview_window(&control_label) {
                         let _ = control.close();
@@ -958,17 +1151,18 @@ fn set_mini_note_click_through(
     } else {
         #[cfg(target_os = "windows")]
         {
-            if let Some(styles) = click_registry
+            let styles = click_registry
                 .0
                 .lock()
                 .map_err(|error| error.to_string())?
-                .remove(&parent_label)
-            {
-                restore_native_window_styles(&styles)?;
-            }
+                .remove(&parent_label);
             parent
                 .set_ignore_cursor_events(false)
                 .map_err(|error| error.to_string())?;
+            if let Some(mut styles) = styles {
+                sync_native_child_click_through(&parent, &mut styles, false)?;
+                restore_native_window_styles(&styles);
+            }
         }
         #[cfg(not(target_os = "windows"))]
         parent
@@ -1071,6 +1265,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(MiniNoteWindowRegistry::default())
         .manage(ClickThroughWindowRegistry::default())
+        .manage(SplitWindowFrameRegistry::default())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -1111,6 +1306,8 @@ pub fn run() {
             reconcile_picture_assets,
             save_pasted_image,
             open_mini_note_window,
+            open_mini_note_pair,
+            set_main_split_open,
             set_mini_note_click_through,
             open_file_in_main,
             toggle_app_windows
@@ -1121,7 +1318,7 @@ pub fn run() {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::click_through_style;
+    use super::{click_through_style, expanded_split_geometry};
     use windows::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_TRANSPARENT};
 
     #[test]
@@ -1129,7 +1326,21 @@ mod tests {
         let original = 0x0000_0008isize;
         let enabled = click_through_style(original);
         assert_ne!(enabled & WS_EX_TRANSPARENT.0 as isize, 0);
-        assert_ne!(enabled & WS_EX_LAYERED.0 as isize, 0);
+        assert_eq!(enabled & WS_EX_LAYERED.0 as isize, original & WS_EX_LAYERED.0 as isize);
         assert_ne!(enabled & original, 0);
+    }
+
+    #[test]
+    fn split_window_adds_one_original_content_width_to_the_right() {
+        let (x, width) = expanded_split_geometry(24, 420, 420, 0, 1920);
+        assert_eq!(x, 24);
+        assert_eq!(width, 840);
+    }
+
+    #[test]
+    fn split_window_shifts_left_only_when_the_right_edge_would_overflow() {
+        let (x, width) = expanded_split_geometry(700, 420, 420, 0, 1200);
+        assert_eq!(x, 360);
+        assert_eq!(width, 840);
     }
 }

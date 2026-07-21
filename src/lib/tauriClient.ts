@@ -172,6 +172,16 @@ export async function openMiniNoteWindow(path: string): Promise<void> {
   await invoke('open_mini_note_window', { path });
 }
 
+export async function openMiniNotePair(paths: [string, string]): Promise<void> {
+  requireTauri();
+  await invoke('open_mini_note_pair', { paths });
+}
+
+export async function setMainSplitOpen(open: boolean): Promise<void> {
+  requireTauri();
+  await invoke('set_main_split_open', { open });
+}
+
 export function currentWindowLabel(): string {
   requireTauri();
   return getCurrentWindow().label;

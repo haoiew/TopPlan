@@ -391,3 +391,70 @@ test('mini note top center is a draggable move zone', async ({ page }) => {
   });
   expect(topHitTarget).toContain('mini-move-zone');
 });
+
+test('mini note controls stay above the scrollbar clearance area', async ({ page }) => {
+  await loadFixture(page, ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
+  await page.click('button[title="便签模式"]');
+  await expect(page.locator('.mini-exit')).toBeVisible();
+
+  const controlTops = await page.locator('.mini-exit').evaluateAll((controls) => {
+    return controls.map((control) => Number.parseFloat(getComputedStyle(control).top));
+  });
+  expect(controlTops).toEqual([5]);
+});
+
+test('split view keeps the file sidebar overlaid instead of consuming an editor column', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+  await page.locator('.app-menu-toggle').click();
+
+  const layout = await page.evaluate(() => {
+    const workspace = document.querySelector('.workspace-main').getBoundingClientRect();
+    const sidebar = document.querySelector('.file-sidebar');
+    const documents = document.querySelector('.document-layout').getBoundingClientRect();
+    return {
+      sidebarPosition: getComputedStyle(sidebar).position,
+      workspaceWidth: workspace.width,
+      documentWidth: documents.width,
+    };
+  });
+  expect(layout.sidebarPosition).toBe('absolute');
+  expect(Math.abs(layout.workspaceWidth - layout.documentWidth)).toBeLessThanOrEqual(1);
+});
+
+test('split view leaves sidebar and toolbar controls clickable', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+  await page.locator('.app-menu-toggle').click();
+
+  await page.locator('button[title="设置"]').click();
+  await expect(page.locator('.settings-popover')).toBeVisible();
+  await page.locator('.settings-head button').click();
+
+  await page.locator('.file-list-item.split-active .file-split-button').click();
+  await expect(page.locator('.document-pane')).toHaveCount(1);
+});
+
+test('split mini note mode targets both panes in left-to-right order', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+
+  const paths = await page.evaluate(() => window.__TOPPLAN_TEST__.getMiniNotePaths());
+  expect(paths).toEqual(['__topplan_test__/left.md', '__topplan_test__/right.md']);
+});
+
+test('narrow single-pane sidebar still covers the full workspace height', async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 640 });
+  await loadFixture(page);
+  await page.locator('.app-menu-toggle').click();
+
+  const offsets = await page.evaluate(() => {
+    const workspace = document.querySelector('.workspace-main').getBoundingClientRect();
+    const sidebar = document.querySelector('.file-sidebar').getBoundingClientRect();
+    return {
+      top: sidebar.top - workspace.top,
+      bottom: workspace.bottom - sidebar.bottom,
+    };
+  });
+  expect(offsets).toEqual({ top: 0, bottom: 0 });
+});

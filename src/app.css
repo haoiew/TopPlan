@@ -358,6 +358,7 @@ button {
 }
 
 .workspace-main {
+  position: relative;
   display: grid;
   min-height: 0;
   flex: 1;
@@ -370,17 +371,26 @@ button {
 }
 
 .workspace-main.sidebar-open {
-  grid-template-columns: minmax(172px, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .file-sidebar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 12;
   display: flex;
+  width: clamp(172px, 34%, 420px);
   min-width: 0;
   flex-direction: column;
   gap: 8px;
   padding: 10px 8px;
   border-right: 1px solid var(--line);
   background: var(--surface-panel);
+  box-shadow: 8px 0 22px rgba(27, 50, 76, 0.08);
+}
+
+.workspace-main.split-open .file-sidebar {
+  width: clamp(172px, 17%, 420px);
 }
 
 .file-create input,
@@ -529,6 +539,8 @@ input[type='checkbox']:checked {
 
 .document-layout {
   display: grid;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(0, 1fr);
@@ -560,28 +572,28 @@ input[type='checkbox']:checked {
   z-index: 8;
   float: right;
   display: grid;
-  width: 22px;
-  height: 22px;
-  margin: 6px 7px -28px 0;
+  width: 18px;
+  height: 18px;
+  margin: 7px 7px -25px 0;
   place-items: center;
   border: 0;
   border-radius: 5px;
-  background: color-mix(in srgb, var(--surface-panel) 82%, transparent);
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
-  opacity: 0.34;
+  opacity: 0;
   transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
 }
 
 .document-pane:hover .pane-close-button,
 .pane-close-button:focus-visible {
-  opacity: 0.78;
+  opacity: 0.18;
 }
 
 .pane-close-button:hover {
   background: var(--accent-soft);
   color: var(--accent-strong);
-  opacity: 1;
+  opacity: 0.82;
 }
 
 .notice,
@@ -716,7 +728,7 @@ input[type='checkbox']:checked {
 .mini-exit,
 .mini-close {
   position: absolute;
-  top: 9px;
+  top: 5px;
   z-index: 5;
   display: grid;
   width: 18px;
@@ -1684,8 +1696,8 @@ input[type='checkbox']:checked {
 
   .file-sidebar {
     position: absolute;
-    inset: 47px auto 35px 0;
-    z-index: 8;
+    inset: 0 auto 0 0;
+    z-index: 12;
     width: min(72vw, 280px);
     box-shadow: var(--shadow);
   }
