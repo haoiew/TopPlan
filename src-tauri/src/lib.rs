@@ -18,12 +18,9 @@ use windows::core::BOOL;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
     Foundation::{HWND, LPARAM},
-    UI::{
-        Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
-        WindowsAndMessaging::{
-            EnumChildWindows, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW, GWL_EXSTYLE,
-            WS_EX_TRANSPARENT,
-        },
+    UI::WindowsAndMessaging::{
+        EnumChildWindows, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW, GWL_EXSTYLE,
+        WS_EX_TRANSPARENT,
     },
 };
 
@@ -46,13 +43,7 @@ const MINI_CONTROL_TOP_OFFSET: i32 = 10;
 struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
 
 #[derive(Default)]
-struct ClickThroughWindowRegistry(Mutex<HashMap<String, HashMap<isize, NativeChildWindowBaseline>>>);
-
-#[derive(Clone, Copy)]
-struct NativeChildWindowBaseline {
-    style: isize,
-    enabled: bool,
-}
+struct ClickThroughWindowRegistry(Mutex<HashMap<String, HashMap<isize, isize>>>);
 
 #[derive(Clone, Copy)]
 struct MainWindowFrame {
@@ -905,11 +896,6 @@ fn click_through_style(style: isize) -> isize {
 }
 
 #[cfg(target_os = "windows")]
-fn click_through_input_enabled(baseline_enabled: bool, click_through: bool) -> bool {
-    !click_through && baseline_enabled
-}
-
-#[cfg(target_os = "windows")]
 unsafe extern "system" fn collect_child_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let handles = &mut *(lparam.0 as *mut Vec<isize>);
     handles.push(hwnd.0 as isize);
@@ -943,30 +929,19 @@ fn apply_native_window_style(handle: isize, style: isize) {
 #[cfg(target_os = "windows")]
 fn sync_native_child_click_through<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
-    baselines: &mut HashMap<isize, NativeChildWindowBaseline>,
+    baselines: &mut HashMap<isize, isize>,
     enabled: bool,
 ) -> Result<(), String> {
     for handle in native_child_window_handles(window)? {
-        let hwnd = HWND(handle as _);
-        let current_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
-        let current_enabled = unsafe { IsWindowEnabled(hwnd) }.as_bool();
-        let baseline = *baselines.entry(handle).or_insert(NativeChildWindowBaseline {
-            style: current_style,
-            enabled: current_enabled,
-        });
+        let current_style = unsafe { GetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE) };
+        let baseline = *baselines.entry(handle).or_insert(current_style);
         let desired_style = if enabled {
-            click_through_style(baseline.style)
+            click_through_style(baseline)
         } else {
-            baseline.style
+            baseline
         };
-        let desired_enabled = click_through_input_enabled(baseline.enabled, enabled);
         if current_style != desired_style {
             apply_native_window_style(handle, desired_style);
-        }
-        if current_enabled != desired_enabled {
-            unsafe {
-                let _ = EnableWindow(hwnd, desired_enabled);
-            }
         }
     }
     Ok(())
@@ -975,7 +950,7 @@ fn sync_native_child_click_through<R: tauri::Runtime>(
 #[cfg(target_os = "windows")]
 fn enable_native_click_through<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
-) -> Result<HashMap<isize, NativeChildWindowBaseline>, String> {
+) -> Result<HashMap<isize, isize>, String> {
     let mut baselines = HashMap::new();
     window
         .set_ignore_cursor_events(true)
@@ -988,14 +963,11 @@ fn enable_native_click_through<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "windows")]
-fn restore_native_window_styles(styles: &HashMap<isize, NativeChildWindowBaseline>) {
-    for (handle, baseline) in styles {
+fn restore_native_window_styles(styles: &HashMap<isize, isize>) {
+    for (handle, style) in styles {
         let hwnd = HWND(*handle as _);
         if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-            apply_native_window_style(*handle, baseline.style);
-            unsafe {
-                let _ = EnableWindow(hwnd, baseline.enabled);
-            }
+            apply_native_window_style(*handle, *style);
         }
     }
 }
@@ -1354,7 +1326,7 @@ pub fn run() {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{click_through_input_enabled, click_through_style, expanded_split_geometry};
+    use super::{click_through_style, expanded_split_geometry};
     use windows::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_TRANSPARENT};
 
     #[test]
@@ -1364,13 +1336,6 @@ mod tests {
         assert_ne!(enabled & WS_EX_TRANSPARENT.0 as isize, 0);
         assert_eq!(enabled & WS_EX_LAYERED.0 as isize, original & WS_EX_LAYERED.0 as isize);
         assert_ne!(enabled & original, 0);
-    }
-
-    #[test]
-    fn click_through_disables_child_input_and_restores_its_baseline() {
-        assert!(!click_through_input_enabled(true, true));
-        assert!(click_through_input_enabled(true, false));
-        assert!(!click_through_input_enabled(false, false));
     }
 
     #[test]
