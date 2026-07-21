@@ -19,6 +19,9 @@ export interface AppSettings {
     enabled: boolean;
     pattern: 'YYYY-MM-DD.md';
   };
+  splitView: {
+    leftFilePath: string | null;
+  };
   miniNote: {
     opacity: number;
     backgroundColor: string;

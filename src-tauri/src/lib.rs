@@ -10,7 +10,8 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, Position, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
 };
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Alt+Space";
@@ -24,6 +25,9 @@ const MINI_WINDOW_MAX_WIDTH: f64 = 390.0;
 const MINI_WINDOW_MAX_HEIGHT: f64 = 560.0;
 const MINI_WINDOW_MARGIN: f64 = 28.0;
 const MINI_WINDOW_GAP: f64 = 12.0;
+const MINI_CONTROL_SIZE: f64 = 22.0;
+const MINI_CONTROL_RIGHT_OFFSET: i32 = 68;
+const MINI_CONTROL_TOP_OFFSET: i32 = 10;
 
 #[derive(Default)]
 struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
@@ -43,6 +47,13 @@ pub struct WindowSettings {
 pub struct DailyFileSettings {
     pub enabled: bool,
     pub pattern: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitViewSettings {
+    #[serde(default)]
+    pub left_file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +79,8 @@ pub struct AppSettings {
     pub auto_start: bool,
     #[serde(default = "default_daily_file_settings")]
     pub daily_file: DailyFileSettings,
+    #[serde(default = "default_split_view_settings")]
+    pub split_view: SplitViewSettings,
     #[serde(default = "default_mini_note_settings")]
     pub mini_note: MiniNoteSettings,
     #[serde(default = "default_theme")]
@@ -113,6 +126,10 @@ fn default_daily_file_settings() -> DailyFileSettings {
     }
 }
 
+fn default_split_view_settings() -> SplitViewSettings {
+    SplitViewSettings { left_file_path: None }
+}
+
 fn default_mini_note_settings() -> MiniNoteSettings {
     MiniNoteSettings {
         opacity: 1.0,
@@ -145,6 +162,7 @@ impl Default for AppSettings {
             hotkey: default_hotkey(),
             auto_start: false,
             daily_file: default_daily_file_settings(),
+            split_view: default_split_view_settings(),
             mini_note: default_mini_note_settings(),
             theme: default_theme(),
             language: default_language(),
@@ -689,6 +707,7 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
     .transparent(true)
     .resizable(true)
     .always_on_top(true)
+    .skip_taskbar(true)
     .visible(true)
     .focused(true)
     .shadow(false)
@@ -705,16 +724,99 @@ async fn open_mini_note_window(app: AppHandle, registry: State<'_, MiniNoteWindo
         .map_err(|error| error.to_string())?
         .insert(normalized_path.clone(), window.label().to_string());
     let app_for_close = app.clone();
+    let parent_label = window.label().to_string();
     window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Destroyed | WindowEvent::CloseRequested { .. }) {
-            {
+        match event {
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                let _ = position_mini_control(&app_for_close, &parent_label);
+            }
+            WindowEvent::Destroyed | WindowEvent::CloseRequested { .. } => {
                 let registry = app_for_close.state::<MiniNoteWindowRegistry>();
                 if let Ok(mut windows) = registry.0.lock() {
                     windows.remove(&normalized_path);
                 };
+                if let Some(control) = app_for_close.get_webview_window(&mini_control_label(&parent_label)) {
+                    let _ = control.close();
+                }
             }
+            _ => {}
         }
     });
+    Ok(())
+}
+
+fn mini_control_label(parent_label: &str) -> String {
+    format!("mini-note-control-{parent_label}")
+}
+
+fn position_mini_control(app: &AppHandle, parent_label: &str) -> Result<(), String> {
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return Ok(());
+    };
+    let Some(control) = app.get_webview_window(&mini_control_label(parent_label)) else {
+        return Ok(());
+    };
+    let position = parent.outer_position().map_err(|error| error.to_string())?;
+    let size = parent.outer_size().map_err(|error| error.to_string())?;
+    let scale = parent.scale_factor().map_err(|error| error.to_string())?;
+    control
+        .set_position(Position::Physical(PhysicalPosition::new(
+            position.x + size.width as i32
+                - (MINI_CONTROL_RIGHT_OFFSET as f64 * scale).round() as i32,
+            position.y + (MINI_CONTROL_TOP_OFFSET as f64 * scale).round() as i32,
+        )))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_mini_note_click_through(app: AppHandle, parent_label: String, enabled: bool) -> Result<(), String> {
+    if !parent_label.starts_with("mini-note-") || parent_label.starts_with("mini-note-control-") {
+        return Err("Click-through is only available for mini note windows.".to_string());
+    }
+    let Some(parent) = app.get_webview_window(&parent_label) else {
+        return Err("Mini note window is no longer available.".to_string());
+    };
+    let control_label = mini_control_label(&parent_label);
+
+    if enabled {
+        if app.get_webview_window(&control_label).is_none() {
+            let encoded_parent = general_purpose::URL_SAFE_NO_PAD.encode(parent_label.as_bytes());
+            WebviewWindowBuilder::new(
+                &app,
+                &control_label,
+                WebviewUrl::App(format!("index.html?topplanMode=mini-control&parent={encoded_parent}").into()),
+            )
+            .title("TopPlan 鼠标穿透")
+            .inner_size(MINI_CONTROL_SIZE, MINI_CONTROL_SIZE)
+            .decorations(false)
+            .transparent(true)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .shadow(false)
+            .build()
+            .map_err(|error| error.to_string())?;
+        }
+        position_mini_control(&app, &parent_label)?;
+        if let Some(control) = app.get_webview_window(&control_label) {
+            control.show().map_err(|error| error.to_string())?;
+        }
+        parent
+            .set_ignore_cursor_events(true)
+            .map_err(|error| error.to_string())?;
+    } else {
+        parent
+            .set_ignore_cursor_events(false)
+            .map_err(|error| error.to_string())?;
+        if let Some(control) = app.get_webview_window(&control_label) {
+            control.close().map_err(|error| error.to_string())?;
+        }
+    }
+
+    app.emit_to(&parent_label, "mini-note-click-through-changed", enabled)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -844,6 +946,7 @@ pub fn run() {
             reconcile_picture_assets,
             save_pasted_image,
             open_mini_note_window,
+            set_mini_note_click_through,
             open_file_in_main,
             toggle_app_windows
         ])

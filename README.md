@@ -6,10 +6,10 @@ TopPlan is a lightweight Windows desktop planner built with Tauri 2, Svelte, Typ
 
 - Local-only data. The first launch asks for a data folder and reads existing `.md` files directly.
 - Default single-file workflow with `TopPlan.md`.
-- Optional daily file mode using `YYYY-MM-DD.md`.
-- Rich Markdown editing, source editing, and split view.
+- Optional workday file mode using `YYYY-MM-DD.md`, Chinese statutory holiday/adjusted-workday data, and automatic plan rollover.
+- Rich Markdown editing, source editing, and persistent two-file left/right editing.
 - Markdown task lists, links, code blocks, and local images.
-- Mini note windows for opening Markdown files as small always-on-top notes.
+- Mini note windows for opening Markdown files as taskbar-free always-on-top widgets, including click-through mode.
 - Mini note opacity and background color settings.
 - Editor zoom controls with cursor and scroll position preservation between editor modes.
 - Local image reference index in `.topplan/image-index.json`.
@@ -80,6 +80,7 @@ pnpm tauri build
 - Select any local folder as the TopPlan workspace.
 - Existing `.md` files are treated as historical plan files and are not migrated.
 - If no Markdown files exist, TopPlan creates `TopPlan.md`.
+- With daily mode enabled, TopPlan creates or opens the current workday file in the main/right pane and preserves a manually opened left pane.
 - Local image paths are resolved in this order:
   1. Current Markdown file directory
   2. Workspace root

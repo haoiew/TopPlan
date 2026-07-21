@@ -134,6 +134,35 @@ test('task button accounts for visual-indent metadata before the selected line',
   ]);
 });
 
+test('mini note applies visual-indent metadata without showing its comment', async ({ page }) => {
+  const indentedDocument = [
+    '- [ ] 第一项',
+    '<!-- topplan-indent:2 -->',
+    '- [ ] 缩进项',
+  ].join('\n');
+  await loadFixture(page, indentedDocument);
+
+  await page.click('button[title="便签模式"]');
+  const miniNote = page.locator('.mini-note-content');
+  await expect(miniNote).toBeVisible();
+  await expect(miniNote).not.toContainText('topplan-indent');
+
+  const firstTask = miniNote.locator('.mini-task').filter({ hasText: '第一项' });
+  const indentedTask = miniNote.locator('.mini-task').filter({ hasText: '缩进项' });
+  const firstBox = await firstTask.boundingBox();
+  const indentedBox = await indentedTask.boundingBox();
+  expect(firstBox).toBeTruthy();
+  expect(indentedBox).toBeTruthy();
+  expect(indentedBox.x - firstBox.x).toBeGreaterThanOrEqual(20);
+
+  await indentedTask.locator('input').check();
+  await expect.poll(async () => (await snapshot(page)).content).toBe([
+    '- [x] 第一项',
+    '<!-- topplan-indent:2 -->',
+    '- [x] 缩进项',
+  ].join('\n'));
+});
+
 test('empty task row toggles in place without consuming neighbouring rows', async ({ page }) => {
   const emptyTaskDocument = [
     '##### 今日计划',
@@ -211,4 +240,126 @@ test('repeated toggles preserve preceding blank lines', async ({ page }) => {
   const after = await snapshot(page);
   expect(after.content.split('\n').filter((line) => line === '').length).toBe(originalBlankCount);
   expect(after.content.split('\n')[10]).toBe('3.');
+});
+
+test('mini note hides time labels while keeping the task text', async ({ page }) => {
+  await loadFixture(
+    page,
+    '- [x] 1. 已完成 <span data-topplan-time="2026/7/21 14:30">2026/7/21 14:30</span>',
+  );
+
+  await page.click('button[title="便签模式"]');
+  const miniNote = page.locator('.mini-note-content');
+  await expect(miniNote).toContainText('1. 已完成');
+  await expect(miniNote).not.toContainText('2026/7/21');
+});
+
+test('checking a parent task checks all visually indented children', async ({ page }) => {
+  const document = [
+    '- [ ] 6. 建模流程梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [ ] 已有代码梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [ ] 加个UI壳',
+  ].join('\n');
+  await loadFixture(page, document);
+  await page.click('button[title="便签模式"]');
+  await page.locator('.mini-task').filter({ hasText: '建模流程梳理' }).locator('input').check();
+
+  await expect.poll(async () => (await snapshot(page)).content).toBe(
+    document.replaceAll('- [ ]', '- [x]'),
+  );
+});
+
+test('checking every child automatically checks its parent', async ({ page }) => {
+  const document = [
+    '- [ ] 6. 建模流程梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [x] 已有代码梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [ ] 加个UI壳',
+  ].join('\n');
+  await loadFixture(page, document);
+  await page.click('button[title="便签模式"]');
+  await page.locator('.mini-task').filter({ hasText: '加个UI壳' }).locator('input').check();
+
+  await expect.poll(async () => (await snapshot(page)).content).toBe(
+    document.replace('- [ ] 6.', '- [x] 6.').replace('- [ ] 加个UI壳', '- [x] 加个UI壳'),
+  );
+});
+
+test('daily rollover splits partially completed child tasks and renumbers both sections', async ({ page }) => {
+  await loadFixture(page);
+  const previous = [
+    '##### 一、今日计划',
+    '',
+    '- [ ] 6. **建模流程梳理**',
+    '<!-- topplan-indent:2 -->',
+    '- [ ] **已有代码梳理，更流程化、规范化**',
+    '<!-- topplan-indent:2 -->',
+    '- [x] **加个UI壳；**',
+    '',
+    '##### 二、近日完成',
+    '',
+    '- [x] 8. 旧完成项 <span data-topplan-time="2026/7/18">2026/7/18</span>',
+  ].join('\n');
+
+  const rolled = await page.evaluate(
+    ({ markdown, date }) => window.__TOPPLAN_TEST__.createDailyMarkdown(markdown, date),
+    { markdown: previous, date: '2026-07-21' },
+  );
+
+  expect(rolled).toContain('- [ ] 1. **建模流程梳理**\n<!-- topplan-indent:2 -->\n- [ ] **已有代码梳理，更流程化、规范化**');
+  expect(rolled).toContain('- [ ] 1. **建模流程梳理**\n<!-- topplan-indent:2 -->\n- [x] **加个UI壳；** <span data-topplan-time="2026/7/21">2026/7/21</span>');
+  expect(rolled).toContain('- [x] 2. 旧完成项 <span data-topplan-time="2026/7/18">2026/7/18</span>');
+  expect(rolled).not.toContain('- [ ] 6.');
+});
+
+test('daily creation follows Chinese statutory holidays and adjusted workdays', async ({ page }) => {
+  await loadFixture(page);
+  const result = await page.evaluate(() => ({
+    nationalDay: window.__TOPPLAN_TEST__.isOfficialChineseWorkday('2026-10-01'),
+    adjustedSaturday: window.__TOPPLAN_TEST__.isOfficialChineseWorkday('2026-10-10'),
+  }));
+
+  expect(result.nationalDay).toBe(false);
+  expect(result.adjustedSaturday).toBe(true);
+});
+
+test('daily rollover preserves notes and indentation metadata inside completed task groups', async ({ page }) => {
+  await loadFixture(page);
+  const previous = [
+    '##### 一、今日计划',
+    '',
+    '##### 二、近日完成',
+    '',
+    '- [x] 4. 已完成父项',
+    '父项说明保持原位',
+    '<!-- topplan-indent:2 -->',
+    '- [x] 已完成子项',
+  ].join('\n');
+
+  const rolled = await page.evaluate(
+    ({ markdown, date }) => window.__TOPPLAN_TEST__.createDailyMarkdown(markdown, date),
+    { markdown: previous, date: '2026-07-21' },
+  );
+
+  expect(rolled).toContain('- [x] 1. 已完成父项\n父项说明保持原位\n<!-- topplan-indent:2 -->\n- [x] 已完成子项');
+});
+
+test('split view renders editable left and right documents and either close button exits split mode', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+
+  await expect(page.locator('.document-pane')).toHaveCount(2);
+  await expect(page.locator('.left-pane')).toContainText('长期计划');
+  await expect(page.locator('.right-pane')).toContainText('今日工作');
+
+  await page.locator('.left-pane .pane-close-button').click();
+  await expect(page.locator('.document-pane')).toHaveCount(1);
+
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+  await page.locator('.right-pane .pane-close-button').click();
+  await expect(page.locator('.document-pane')).toHaveCount(1);
+  await expect(page.locator('.right-pane')).toContainText('长期计划');
 });

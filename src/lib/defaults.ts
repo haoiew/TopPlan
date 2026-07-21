@@ -30,6 +30,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     pattern: 'YYYY-MM-DD.md',
   },
+  splitView: {
+    leftFilePath: null,
+  },
   miniNote: {
     opacity: 1,
     backgroundColor: '#ffffff',

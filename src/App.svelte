@@ -3,12 +3,15 @@
   import {
     Clock3,
     Code2,
+    Columns2,
     FilePlus,
     FileText,
     FolderOpen,
     Image,
     Maximize2,
     Minus,
+    MousePointer2,
+    MousePointer2Off,
     NotepadText,
     PanelLeftClose,
     PanelLeftOpen,
@@ -25,22 +28,31 @@
   import CodeMirrorEditor from './lib/CodeMirrorEditor.svelte';
   import MiniNoteView from './lib/MiniNoteView.svelte';
   import RichMarkdownEditor from './lib/RichMarkdownEditor.svelte';
-  import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS, todayFileName } from './lib/defaults';
-  import { toggleTaskMarkerOnLine } from './lib/markdownView';
+  import { AUTOSAVE_DELAY_MS, DEFAULT_FILE_NAME, DEFAULT_MARKDOWN, DEFAULT_SETTINGS } from './lib/defaults';
+  import {
+    createDailyMarkdown as buildDailyMarkdown,
+    dailyFileName,
+    isOfficialChineseWorkday,
+    latestDailyFileBefore,
+  } from './lib/dailyFile';
+  import { synchronizeTaskHierarchy, toggleTaskMarkerOnLine } from './lib/markdownView';
   import {
     configureAutostart,
     configureGlobalHotkey,
+    currentWindowLabel,
     broadcastMiniNoteContent,
     broadcastMiniNoteSettings,
     cleanupStaleDeletedImages,
     closeWindow,
     createMarkdownFile,
     getSettings,
+    getWindowInnerSize,
     hideWindow,
     isTauriRuntime,
     listMarkdownFiles,
     minimizeWindow,
     onMiniNoteContentChanged,
+    onMiniNoteClickThroughChanged,
     onMiniNoteSettingsChanged,
     onOpenFileInMain,
     openFileInMain,
@@ -54,7 +66,9 @@
     scanImageReferences,
     selectWorkspaceDir,
     setAlwaysOnTop,
+    setMiniNoteClickThrough,
     setWindowShadow,
+    setWindowInnerSize,
     setWindowSizeLimits,
     startWindowDrag,
     startWindowResize,
@@ -65,6 +79,7 @@
   import type { AppSettings, ImageReference, LanguageMode, PlanFile, ThemeMode } from './types';
 
   type TransitionMode = 'main' | 'to-mini' | 'mini' | 'to-main';
+  type PaneSide = 'left' | 'right';
   type RgbChannel = 'r' | 'g' | 'b';
   type RgbValue = Record<RgbChannel, number>;
   type HsvValue = {
@@ -77,8 +92,35 @@
   };
   type TopPlanTestApi = {
     setDocument: (markdown: string) => Promise<void>;
+    setSplitDocuments: (leftMarkdown: string, rightMarkdown: string) => Promise<void>;
     getContent: () => string;
+    getLeftContent: () => string;
+    createDailyMarkdown: (previousMarkdown: string | null, date: string) => string;
+    isOfficialChineseWorkday: (date: string) => boolean;
     getRichDebugSnapshot: () => unknown;
+  };
+
+  type SourceEditorHandle = {
+    insertText: (text: string) => void;
+    toggleTaskMarkerAtLineStart: () => void;
+    getTopLine: () => number;
+    scrollToLine: (line: number) => boolean;
+    getCursorAnchor: () => CursorAnchor | null;
+    setCursorAnchor: (anchor: CursorAnchor) => boolean;
+  };
+
+  type RichEditorHandle = {
+    insertMarkdown: (text: string) => void;
+    insertTimestamp: (value: string) => void;
+    getSelectedSourceLine: () => number;
+    getTaskToggleTarget: (markdown: string) => { editorLine: number; documentLine: number };
+    getSourceLineAnchor: (line: number) => CursorAnchor;
+    getDebugSnapshot: () => unknown;
+    insertImage: (path: string) => void;
+    getTopLine: () => number;
+    scrollToLine: (line: number) => boolean;
+    getCursorAnchor: () => CursorAnchor | null;
+    setCursorAnchor: (anchor: CursorAnchor) => boolean;
   };
 
   const MINI_TRANSITION_MS = 150;
@@ -95,9 +137,12 @@
   let files: PlanFile[] = [];
   let images: ImageReference[] = [];
   let content = '';
+  let leftContent = '';
   let loading = true;
   let saving = false;
+  let leftSaving = false;
   let dirty = false;
+  let leftDirty = false;
   let sidebarOpen = false;
   let sourceMode = false;
   let miniMode = false;
@@ -117,7 +162,12 @@
   let lastHotkeyToggleAt = 0;
   let lastZoomWheelAt = 0;
   let applyingRemoteContent = false;
+  let activePane: PaneSide = 'right';
+  let miniClickThrough = false;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let leftSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let dailyTimer: ReturnType<typeof setInterval> | null = null;
+  let lastDailyCheckDate = '';
   let scrollTimer: ReturnType<typeof setTimeout> | null = null;
   let zoomTimer: ReturnType<typeof setTimeout> | null = null;
   type CursorAnchor = {
@@ -126,38 +176,25 @@
   };
   const CURSOR_ANCHOR_VIEWPORT_TOLERANCE = 24;
   type NavigationAnchor = { kind: 'cursor'; anchor: CursorAnchor } | { kind: 'top'; line: number };
-  let sourceEditor: {
-    insertText: (text: string) => void;
-    toggleTaskMarkerAtLineStart: () => void;
-    getTopLine: () => number;
-    scrollToLine: (line: number) => boolean;
-    getCursorAnchor: () => CursorAnchor | null;
-    setCursorAnchor: (anchor: CursorAnchor) => boolean;
-  } | null = null;
-  let richEditor: {
-    insertMarkdown: (text: string) => void;
-    insertTimestamp: (value: string) => void;
-    getSelectedSourceLine: () => number;
-    getTaskToggleTarget: (markdown: string) => { editorLine: number; documentLine: number };
-    getSourceLineAnchor: (line: number) => CursorAnchor;
-    getDebugSnapshot: () => unknown;
-    insertImage: (path: string) => void;
-    getTopLine: () => number;
-    scrollToLine: (line: number) => boolean;
-    getCursorAnchor: () => CursorAnchor | null;
-    setCursorAnchor: (anchor: CursorAnchor) => boolean;
-  } | null = null;
+  let sourceEditor: SourceEditorHandle | null = null;
+  let richEditor: RichEditorHandle | null = null;
+  let leftSourceEditor: SourceEditorHandle | null = null;
+  let leftRichEditor: RichEditorHandle | null = null;
   let pendingNavigationAnchor: NavigationAnchor | null = null;
   const ZOOM_STEPS = [0.78, 0.85, 0.9, 0.95, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
   const launchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
   const isMiniWindow = launchParams.get('topplanMode') === 'mini';
+  const isMiniControlWindow = launchParams.get('topplanMode') === 'mini-control';
   const launchedMiniFilePath = decodeMiniFilePath(launchParams.get('file'));
+  const launchedMiniParentLabel = decodeMiniFilePath(launchParams.get('parent'));
 
   $: activeFile = files.find((file) => file.path === settings.activeFilePath) ?? null;
+  $: leftFile = files.find((file) => file.path === settings.splitView.leftFilePath) ?? null;
+  $: splitOpen = Boolean(settings.splitView.leftFilePath && leftFile);
   $: missingImages = images.filter((item) => item.status === 'missing');
   $: externalImages = images.filter((item) => item.status === 'external');
   $: text = TEXT[settings.language] ?? TEXT.zh;
-  $: wordCount = content.replace(/\s+/g, '').length;
+  $: wordCount = (activePane === 'left' && splitOpen ? leftContent : content).replace(/\s+/g, '').length;
   $: miniSurfaceOpacity = settings.miniNote.opacity;
   $: miniBackgroundRgb = colorToRgb(settings.miniNote.backgroundColor);
   $: miniBackgroundChannels = colorToRgbValue(settings.miniNote.backgroundColor);
@@ -175,6 +212,7 @@
       ...next,
       window: { ...settings.window, ...(next.window ?? {}) },
       dailyFile: { ...settings.dailyFile, ...(next.dailyFile ?? {}) },
+      splitView: { ...settings.splitView, ...(next.splitView ?? {}) },
       miniNote: { ...settings.miniNote, ...(next.miniNote ?? {}) },
     };
   }
@@ -346,9 +384,19 @@
     }, AUTOSAVE_DELAY_MS);
   }
 
-  async function flushSave(): Promise<void> {
+  function scheduleLeftSave(): void {
+    leftDirty = true;
+    if (leftSaveTimer) {
+      clearTimeout(leftSaveTimer);
+    }
+    leftSaveTimer = setTimeout(() => {
+      void flushLeftSave();
+    }, AUTOSAVE_DELAY_MS);
+  }
+
+  async function flushSave(): Promise<boolean> {
     if (!settings.activeFilePath || !dirty) {
-      return;
+      return true;
     }
     if (saveTimer) {
       clearTimeout(saveTimer);
@@ -361,16 +409,51 @@
       dirty = false;
       await refreshFiles();
       await refreshImages();
+      return true;
     } catch (error) {
       setError(error);
+      return false;
     } finally {
       saving = false;
     }
   }
 
+  async function flushLeftSave(): Promise<boolean> {
+    const path = settings.splitView.leftFilePath;
+    if (!path || !leftDirty) {
+      return true;
+    }
+    if (leftSaveTimer) {
+      clearTimeout(leftSaveTimer);
+      leftSaveTimer = null;
+    }
+    leftSaving = true;
+    try {
+      await writeMarkdownFile(path, leftContent);
+      await reconcilePictureAssets(path, leftContent);
+      leftDirty = false;
+      await refreshFiles();
+      await refreshImages();
+      return true;
+    } catch (error) {
+      setError(error);
+      return false;
+    } finally {
+      leftSaving = false;
+    }
+  }
+
+  async function flushAllSaves(): Promise<boolean> {
+    const results = await Promise.all([flushSave(), flushLeftSave()]);
+    return results.every(Boolean);
+  }
+
   async function refreshFiles(): Promise<void> {
     if (!settings.workspaceRoot) {
       files = [];
+      return;
+    }
+    if (!isTauriRuntime && settings.workspaceRoot === '__topplan_test__') {
       return;
     }
     files = await listMarkdownFiles(settings.workspaceRoot, settings.activeFilePath);
@@ -379,6 +462,9 @@
   async function refreshImages(): Promise<void> {
     if (!settings.workspaceRoot) {
       images = [];
+      return;
+    }
+    if (!isTauriRuntime && settings.workspaceRoot === '__topplan_test__') {
       return;
     }
     const references = await scanImageReferences(settings.workspaceRoot);
@@ -399,16 +485,30 @@
     );
   }
 
+  async function ensureDailyFile(root: string, date: Date, currentFiles: PlanFile[]): Promise<string | null> {
+    if (!isOfficialChineseWorkday(date)) {
+      return null;
+    }
+    const name = dailyFileName(date);
+    const existing = currentFiles.find((file) => file.name === name);
+    if (existing) {
+      return existing.path;
+    }
+    const previous = latestDailyFileBefore(currentFiles, date);
+    const previousMarkdown = previous ? await readMarkdownFile(previous.path) : null;
+    const markdown = buildDailyMarkdown(previousMarkdown, date);
+    return (await createMarkdownFile(root, name, markdown)).path;
+  }
+
   async function ensureActiveFile(root: string): Promise<string> {
     const currentFiles = await listMarkdownFiles(root, settings.activeFilePath);
 
     if (settings.dailyFile.enabled) {
-      const name = todayFileName();
-      const existing = currentFiles.find((file) => file.name === name);
-      if (existing) {
-        return existing.path;
+      const dailyPath = await ensureDailyFile(root, new Date(), currentFiles);
+      if (dailyPath) {
+        lastDailyCheckDate = dailyFileName(new Date());
+        return dailyPath;
       }
-      return (await createMarkdownFile(root, name, DEFAULT_MARKDOWN)).path;
     }
 
     if (settings.activeFilePath && currentFiles.some((file) => file.path === settings.activeFilePath)) {
@@ -429,12 +529,25 @@
       await cleanupStaleDeletedImages(root, 24);
       const activePath = await ensureActiveFile(root);
       const nextContent = await readMarkdownFile(activePath);
-      settings = cloneSettings({ workspaceRoot: root, activeFilePath: activePath });
+      const currentFiles = await listMarkdownFiles(root, activePath);
+      const configuredLeftPath = settings.splitView.leftFilePath;
+      const leftPath =
+        configuredLeftPath && configuredLeftPath !== activePath && currentFiles.some((file) => file.path === configuredLeftPath)
+          ? configuredLeftPath
+          : null;
+      const nextLeftContent = leftPath ? await readMarkdownFile(leftPath) : '';
+      settings = cloneSettings({ workspaceRoot: root, activeFilePath: activePath, splitView: { leftFilePath: leftPath } });
       content = nextContent;
+      leftContent = nextLeftContent;
       dirty = false;
+      leftDirty = false;
+      activePane = 'right';
       await refreshFiles();
       await refreshImages();
       await persistSettings(settings);
+      if (leftPath) {
+        await ensureSplitWindowSize();
+      }
     } catch (error) {
       setError(error);
     } finally {
@@ -444,6 +557,9 @@
 
   async function chooseWorkspace(): Promise<void> {
     try {
+      if (!(await flushAllSaves())) {
+        return;
+      }
       const selected = await selectWorkspaceDir();
       if (selected) {
         await openWorkspace(selected);
@@ -457,12 +573,19 @@
     if (path === settings.activeFilePath) {
       return;
     }
-    await flushSave();
+    if (path === settings.splitView.leftFilePath) {
+      await closeSplitPane('right');
+      return;
+    }
+    if (!(await flushSave())) {
+      return;
+    }
     try {
       const nextContent = await readMarkdownFile(path);
       const settingsSave = persistSettings(cloneSettings({ activeFilePath: path }));
       content = nextContent;
       dirty = false;
+      activePane = 'right';
       await settingsSave;
       await refreshFiles();
       await refreshImages();
@@ -472,12 +595,21 @@
   }
 
   async function openFileInMainView(path: string): Promise<void> {
-    await flushSave();
+    if (path === settings.splitView.leftFilePath) {
+      await closeSplitPane('right');
+      sidebarOpen = false;
+      showSettings = false;
+      return;
+    }
+    if (!(await flushSave())) {
+      return;
+    }
     try {
       const nextContent = await readMarkdownFile(path);
       const settingsSave = persistSettings(cloneSettings({ activeFilePath: path }));
       content = nextContent;
       dirty = false;
+      activePane = 'right';
       await settingsSave;
       await refreshFiles();
       await refreshImages();
@@ -488,13 +620,98 @@
     }
   }
 
+  async function toggleSplitFile(path: string, event?: MouseEvent): Promise<void> {
+    event?.stopPropagation();
+    if (path === settings.splitView.leftFilePath) {
+      await closeSplitPane('left');
+      return;
+    }
+    if (path === settings.activeFilePath) {
+      return;
+    }
+    if (!(await flushLeftSave())) {
+      return;
+    }
+    try {
+      const nextLeftContent = await readMarkdownFile(path);
+      leftContent = nextLeftContent;
+      leftDirty = false;
+      activePane = 'left';
+      await persistSettings(cloneSettings({ splitView: { leftFilePath: path } }));
+      await ensureSplitWindowSize();
+      await refreshFiles();
+    } catch (error) {
+      setError(error);
+    }
+  }
+
+  async function closeSplitPane(side: PaneSide): Promise<void> {
+    const leftPath = settings.splitView.leftFilePath;
+    if (!leftPath) {
+      return;
+    }
+    if (side === 'left') {
+      if (!(await flushLeftSave())) {
+        return;
+      }
+      leftContent = '';
+      leftDirty = false;
+      activePane = 'right';
+      await persistSettings(cloneSettings({ splitView: { leftFilePath: null } }));
+      await releaseSplitWindowSize();
+      await refreshFiles();
+      return;
+    }
+
+    if (!(await flushAllSaves())) {
+      return;
+    }
+    content = leftContent;
+    dirty = false;
+    leftContent = '';
+    leftDirty = false;
+    activePane = 'right';
+    await persistSettings(cloneSettings({ activeFilePath: leftPath, splitView: { leftFilePath: null } }));
+    await releaseSplitWindowSize();
+    await refreshFiles();
+    await refreshImages();
+  }
+
+  async function ensureSplitWindowSize(): Promise<void> {
+    if (!isTauriRuntime || isMiniWindow || isMiniControlWindow) {
+      return;
+    }
+    try {
+      await setWindowSizeLimits(620, 360);
+      const size = await getWindowInnerSize();
+      if (size.width < 720) {
+        await setWindowInnerSize(720, Math.max(size.height, 560));
+      }
+    } catch (error) {
+      setError(error);
+    }
+  }
+
+  async function releaseSplitWindowSize(): Promise<void> {
+    if (!isTauriRuntime || isMiniWindow || isMiniControlWindow) {
+      return;
+    }
+    try {
+      await setWindowSizeLimits();
+    } catch (error) {
+      setError(error);
+    }
+  }
+
   async function createFile(): Promise<void> {
     if (!settings.workspaceRoot) {
       return;
     }
     const trimmed = newFileName.trim();
-    const name = trimmed.endsWith('.md') ? trimmed : `${trimmed || todayFileName()}.md`;
-    await flushSave();
+    const name = trimmed ? (trimmed.endsWith('.md') ? trimmed : `${trimmed}.md`) : dailyFileName(new Date());
+    if (!(await flushSave())) {
+      return;
+    }
     try {
       const created = await createMarkdownFile(settings.workspaceRoot, name, DEFAULT_MARKDOWN);
       newFileName = '';
@@ -552,7 +769,9 @@
     }
     committingTitleRename = true;
     try {
-      await flushSave();
+      if (!(await flushSave())) {
+        return;
+      }
       const renamed = await renameMarkdownFile(activeFile.path, nextName);
       await persistSettings(cloneSettings({ activeFilePath: renamed.path }));
       await refreshFiles();
@@ -659,7 +878,10 @@
   }
 
   async function toggleDailyFile(): Promise<void> {
-    await flushSave();
+    if (!(await flushAllSaves())) {
+      return;
+    }
+    lastDailyCheckDate = '';
     await persistSettings(cloneSettings({ dailyFile: { ...settings.dailyFile, enabled: !settings.dailyFile.enabled } }));
     if (settings.workspaceRoot) {
       await openWorkspace(settings.workspaceRoot);
@@ -678,12 +900,15 @@
 
   async function enterMiniMode(): Promise<void> {
     if (isTauriRuntime) {
-      if (!settings.activeFilePath) {
+      const path = activePane === 'left' && splitOpen ? settings.splitView.leftFilePath : settings.activeFilePath;
+      if (!path) {
         return;
       }
-      await flushSave();
+      if (!(await flushAllSaves())) {
+        return;
+      }
       try {
-        await openMiniNoteWindow(settings.activeFilePath);
+        await openMiniNoteWindow(path);
       } catch (error) {
         setError(error);
       }
@@ -693,7 +918,9 @@
     if (transitionMode !== 'main') {
       return;
     }
-    await flushSave();
+    if (!(await flushAllSaves())) {
+      return;
+    }
     sourceMode = false;
     sidebarOpen = false;
     showSettings = false;
@@ -707,7 +934,9 @@
 
   async function openFileAsMiniNote(path: string, event?: MouseEvent): Promise<void> {
     event?.stopPropagation();
-    await flushSave();
+    if (!(await flushAllSaves())) {
+      return;
+    }
     try {
       if (isTauriRuntime) {
         await openMiniNoteWindow(path);
@@ -724,7 +953,9 @@
     if (!settings.activeFilePath) {
       return;
     }
-    await flushSave();
+    if (!(await flushSave())) {
+      return;
+    }
     if (isTauriRuntime && isMiniWindow) {
       try {
         await openFileInMain(settings.activeFilePath);
@@ -737,7 +968,9 @@
   }
 
   async function closeCurrentMiniNote(): Promise<void> {
-    await flushSave();
+    if (!(await flushSave())) {
+      return;
+    }
     if (isTauriRuntime && isMiniWindow) {
       try {
         await closeWindow();
@@ -747,6 +980,31 @@
       return;
     }
     await exitMiniMode();
+  }
+
+  async function toggleMiniClickThrough(): Promise<void> {
+    if (!isTauriRuntime || !isMiniWindow) {
+      return;
+    }
+    const next = !miniClickThrough;
+    miniClickThrough = next;
+    try {
+      await setMiniNoteClickThrough(currentWindowLabel(), next);
+    } catch (error) {
+      miniClickThrough = !next;
+      setError(error);
+    }
+  }
+
+  async function disableMiniClickThroughFromControl(): Promise<void> {
+    if (!isTauriRuntime || !isMiniControlWindow || !launchedMiniParentLabel) {
+      return;
+    }
+    try {
+      await setMiniNoteClickThrough(launchedMiniParentLabel, false);
+    } catch (error) {
+      setError(error);
+    }
   }
 
   async function exitMiniMode(): Promise<void> {
@@ -773,36 +1031,73 @@
   }
 
   function updateContent(next: string): void {
-    content = next;
+    const normalized = synchronizeTaskHierarchy(content, next);
+    content = normalized;
     scheduleSave();
     if (!applyingRemoteContent && isTauriRuntime && settings.activeFilePath) {
-      void broadcastMiniNoteContent(settings.activeFilePath, next);
+      void broadcastMiniNoteContent(settings.activeFilePath, normalized);
+    }
+    if (settings.splitView.leftFilePath === settings.activeFilePath) {
+      leftContent = normalized;
+    }
+  }
+
+  function updateLeftContent(next: string): void {
+    const normalized = synchronizeTaskHierarchy(leftContent, next);
+    leftContent = normalized;
+    scheduleLeftSave();
+    if (!applyingRemoteContent && isTauriRuntime && settings.splitView.leftFilePath) {
+      void broadcastMiniNoteContent(settings.splitView.leftFilePath, normalized);
+    }
+  }
+
+  function activeSourceEditor(): SourceEditorHandle | null {
+    return activePane === 'left' && splitOpen ? leftSourceEditor : sourceEditor;
+  }
+
+  function activeRichEditor(): RichEditorHandle | null {
+    return activePane === 'left' && splitOpen ? leftRichEditor : richEditor;
+  }
+
+  function activePaneContent(): string {
+    return activePane === 'left' && splitOpen ? leftContent : content;
+  }
+
+  function updateActivePaneContent(next: string): void {
+    if (activePane === 'left' && splitOpen) {
+      updateLeftContent(next);
+    } else {
+      updateContent(next);
     }
   }
 
   function insertMarkdown(markdown: string): void {
     const text = `\n\n${markdown}\n`;
-    if (sourceMode && sourceEditor) {
-      sourceEditor.insertText(text);
-    } else if (richEditor) {
-      richEditor.insertMarkdown(markdown);
+    const source = activeSourceEditor();
+    const rich = activeRichEditor();
+    if (sourceMode && source) {
+      source.insertText(text);
+    } else if (rich) {
+      rich.insertMarkdown(markdown);
     } else {
-      content = `${content.trimEnd()}${text}`;
-      scheduleSave();
+      updateActivePaneContent(`${activePaneContent().trimEnd()}${text}`);
     }
   }
 
   async function insertTaskCheckbox(): Promise<void> {
-    if (sourceMode && sourceEditor) {
-      sourceEditor.toggleTaskMarkerAtLineStart();
-    } else if (richEditor) {
-      const target = richEditor.getTaskToggleTarget(content);
-      pendingNavigationAnchor = { kind: 'cursor', anchor: richEditor.getSourceLineAnchor(target.editorLine) };
-      updateContent(toggleTaskMarkerOnLine(content, target.documentLine, { preserveEmptyParagraph: true }));
+    const source = activeSourceEditor();
+    const rich = activeRichEditor();
+    const paneContent = activePaneContent();
+    if (sourceMode && source) {
+      source.toggleTaskMarkerAtLineStart();
+    } else if (rich) {
+      const target = rich.getTaskToggleTarget(paneContent);
+      pendingNavigationAnchor = { kind: 'cursor', anchor: rich.getSourceLineAnchor(target.editorLine) };
+      updateActivePaneContent(toggleTaskMarkerOnLine(paneContent, target.documentLine, { preserveEmptyParagraph: true }));
       await tick();
       restorePendingNavigation();
     } else {
-      updateContent(toggleTaskMarkerOnLine(content, 1));
+      updateActivePaneContent(toggleTaskMarkerOnLine(paneContent, 1));
     }
   }
 
@@ -815,14 +1110,16 @@
   function insertCurrentTime(): void {
     const timestamp = currentTimestampLabel();
     const markdown = `<span data-topplan-time="${timestamp}">${timestamp}</span>`;
-    if (sourceMode && sourceEditor) {
-      sourceEditor.insertText(` ${markdown} `);
-    } else if (richEditor) {
-      richEditor.insertTimestamp(timestamp);
+    const source = activeSourceEditor();
+    const rich = activeRichEditor();
+    const paneContent = activePaneContent();
+    if (sourceMode && source) {
+      source.insertText(` ${markdown} `);
+    } else if (rich) {
+      rich.insertTimestamp(timestamp);
     } else {
-      const separator = content && !content.endsWith('\n') && !content.endsWith(' ') ? ' ' : '';
-      content = `${content}${separator}${markdown} `;
-      scheduleSave();
+      const separator = paneContent && !paneContent.endsWith('\n') && !paneContent.endsWith(' ') ? ' ' : '';
+      updateActivePaneContent(`${paneContent}${separator}${markdown} `);
     }
   }
 
@@ -834,7 +1131,8 @@
   }
 
   async function handlePaste(event: ClipboardEvent): Promise<boolean> {
-    if (event.defaultPrevented || !settings.activeFilePath || !event.clipboardData) {
+    const activePath = activePane === 'left' && splitOpen ? settings.splitView.leftFilePath : settings.activeFilePath;
+    if (event.defaultPrevented || !activePath || !event.clipboardData) {
       return false;
     }
     const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith('image/'));
@@ -849,16 +1147,26 @@
         return false;
       }
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-      const relativePath = await savePastedImage(settings.activeFilePath, bytes, extensionFromMime(file.type));
-      if (sourceMode && sourceEditor) {
-        sourceEditor.insertText(`\n\n![](${relativePath})\n`);
-      } else if (richEditor) {
-        richEditor.insertImage(relativePath);
+      const relativePath = await savePastedImage(activePath, bytes, extensionFromMime(file.type));
+      const source = activeSourceEditor();
+      const rich = activeRichEditor();
+      if (sourceMode && source) {
+        source.insertText(`\n\n![](${relativePath})\n`);
+      } else if (rich) {
+        rich.insertImage(relativePath);
       } else {
         insertMarkdown(`![](${relativePath})`);
       }
       await tick();
-      await flushSave();
+      if (activePane === 'left' && splitOpen) {
+        if (!(await flushLeftSave())) {
+          return true;
+        }
+      } else {
+        if (!(await flushSave())) {
+          return true;
+        }
+      }
       await refreshImages();
       return true;
     } catch (error) {
@@ -868,28 +1176,32 @@
   }
 
   function currentNavigationAnchor(): NavigationAnchor {
+    const source = activeSourceEditor();
+    const rich = activeRichEditor();
     if (sourceMode) {
-      const cursor = sourceEditor?.getCursorAnchor();
+      const cursor = source?.getCursorAnchor();
       return cursor && cursor.yOffset >= -CURSOR_ANCHOR_VIEWPORT_TOLERANCE && cursor.yOffset <= window.innerHeight
         ? { kind: 'cursor', anchor: cursor }
-        : { kind: 'top', line: sourceEditor?.getTopLine() ?? 1 };
+        : { kind: 'top', line: source?.getTopLine() ?? 1 };
     }
-    const cursor = richEditor?.getCursorAnchor();
+    const cursor = rich?.getCursorAnchor();
     return cursor && cursor.yOffset >= -CURSOR_ANCHOR_VIEWPORT_TOLERANCE && cursor.yOffset <= window.innerHeight
       ? { kind: 'cursor', anchor: cursor }
-      : { kind: 'top', line: richEditor?.getTopLine() ?? 1 };
+      : { kind: 'top', line: rich?.getTopLine() ?? 1 };
   }
 
   function restoreNavigationAnchor(anchor: NavigationAnchor): boolean {
+    const source = activeSourceEditor();
+    const rich = activeRichEditor();
     try {
       return (
         anchor.kind === 'cursor'
           ? sourceMode
-            ? (sourceEditor?.setCursorAnchor(anchor.anchor) ?? false)
-            : (richEditor?.setCursorAnchor(anchor.anchor) ?? false)
+            ? (source?.setCursorAnchor(anchor.anchor) ?? false)
+            : (rich?.setCursorAnchor(anchor.anchor) ?? false)
           : sourceMode
-            ? (sourceEditor?.scrollToLine(anchor.line) ?? false)
-            : (richEditor?.scrollToLine(anchor.line) ?? false)
+            ? (source?.scrollToLine(anchor.line) ?? false)
+            : (rich?.scrollToLine(anchor.line) ?? false)
       );
     } catch (error) {
       return false;
@@ -996,13 +1308,53 @@
   }
 
   function applyRemoteContent(path: string, nextContent: string): void {
-    if (path !== settings.activeFilePath || nextContent === content) {
+    if (path !== settings.activeFilePath && path !== settings.splitView.leftFilePath) {
       return;
     }
     applyingRemoteContent = true;
-    content = nextContent;
-    dirty = false;
+    if (path === settings.activeFilePath && nextContent !== content) {
+      content = nextContent;
+      dirty = false;
+    }
+    if (path === settings.splitView.leftFilePath && nextContent !== leftContent) {
+      leftContent = nextContent;
+      leftDirty = false;
+    }
     applyingRemoteContent = false;
+  }
+
+  async function ensureCurrentDailyDocument(): Promise<void> {
+    if (!settings.dailyFile.enabled || !settings.workspaceRoot || isMiniWindow || isMiniControlWindow) {
+      return;
+    }
+    const now = new Date();
+    const dateKey = dailyFileName(now);
+    if (dateKey === lastDailyCheckDate) {
+      return;
+    }
+    lastDailyCheckDate = dateKey;
+    try {
+      if (!isOfficialChineseWorkday(now)) {
+        return;
+      }
+      if (!(await flushAllSaves())) {
+        return;
+      }
+      const currentFiles = await listMarkdownFiles(settings.workspaceRoot, settings.activeFilePath);
+      const dailyPath = await ensureDailyFile(settings.workspaceRoot, now, currentFiles);
+      if (!dailyPath || dailyPath === settings.activeFilePath) {
+        await refreshFiles();
+        return;
+      }
+      content = await readMarkdownFile(dailyPath);
+      dirty = false;
+      activePane = 'right';
+      await persistSettings(cloneSettings({ activeFilePath: dailyPath }));
+      await refreshFiles();
+      await refreshImages();
+    } catch (error) {
+      setError(error);
+    }
   }
 
   async function loadApp(): Promise<void> {
@@ -1015,6 +1367,10 @@
     }
 
     try {
+      if (isMiniControlWindow) {
+        loading = false;
+        return;
+      }
       settings = await getSettings();
       applyTheme(settings.theme);
       if (isMiniWindow) {
@@ -1049,6 +1405,9 @@
       if (settings.workspaceRoot) {
         await openWorkspace(settings.workspaceRoot);
       }
+      if (settings.dailyFile.enabled) {
+        lastDailyCheckDate = dailyFileName(new Date());
+      }
     } catch (error) {
       setError(error);
     } finally {
@@ -1062,11 +1421,35 @@
       testWindow.__TOPPLAN_TEST__ = {
         async setDocument(markdown: string) {
           const path = '__topplan_test__/test.md';
-          settings = cloneSettings({ workspaceRoot: '__topplan_test__', activeFilePath: path });
+          settings = cloneSettings({ workspaceRoot: '__topplan_test__', activeFilePath: path, splitView: { leftFilePath: null } });
           files = [{ name: 'test.md', path, modifiedAt: new Date(0).toISOString(), size: markdown.length, isActive: true }];
           images = [];
           content = markdown;
+          leftContent = '';
           dirty = false;
+          loading = false;
+          desktopPreview = false;
+          sourceMode = false;
+          await tick();
+        },
+        async setSplitDocuments(leftMarkdown: string, rightMarkdown: string) {
+          const leftPath = '__topplan_test__/left.md';
+          const rightPath = '__topplan_test__/right.md';
+          settings = cloneSettings({
+            workspaceRoot: '__topplan_test__',
+            activeFilePath: rightPath,
+            splitView: { leftFilePath: leftPath },
+          });
+          files = [
+            { name: 'left.md', path: leftPath, modifiedAt: new Date(0).toISOString(), size: leftMarkdown.length, isActive: false },
+            { name: 'right.md', path: rightPath, modifiedAt: new Date(0).toISOString(), size: rightMarkdown.length, isActive: true },
+          ];
+          images = [];
+          leftContent = leftMarkdown;
+          content = rightMarkdown;
+          leftDirty = false;
+          dirty = false;
+          activePane = 'right';
           loading = false;
           desktopPreview = false;
           sourceMode = false;
@@ -1074,6 +1457,17 @@
         },
         getContent() {
           return content;
+        },
+        getLeftContent() {
+          return leftContent;
+        },
+        createDailyMarkdown(previousMarkdown: string | null, date: string) {
+          const [year, month, day] = date.split('-').map(Number);
+          return buildDailyMarkdown(previousMarkdown, new Date(year, month - 1, day));
+        },
+        isOfficialChineseWorkday(date: string) {
+          const [year, month, day] = date.split('-').map(Number);
+          return isOfficialChineseWorkday(new Date(year, month - 1, day));
         },
         getRichDebugSnapshot() {
           return richEditor?.getDebugSnapshot() ?? null;
@@ -1085,7 +1479,8 @@
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenMiniSettings: (() => void) | null = null;
     let unlistenMiniContent: (() => void) | null = null;
-    if (isTauriRuntime && !isMiniWindow) {
+    let unlistenMiniClickThrough: (() => void) | null = null;
+    if (isTauriRuntime && !isMiniWindow && !isMiniControlWindow) {
       void onOpenFileInMain(async (path) => {
         await openFileInMainView(path);
       }).then((unlisten) => {
@@ -1098,8 +1493,13 @@
       }).then((unlisten) => {
         unlistenMiniSettings = unlisten;
       });
+      void onMiniNoteClickThroughChanged((enabled) => {
+        miniClickThrough = enabled;
+      }).then((unlisten) => {
+        unlistenMiniClickThrough = unlisten;
+      });
     }
-    if (isTauriRuntime) {
+    if (isTauriRuntime && !isMiniControlWindow) {
       void onMiniNoteContentChanged((payload) => {
         applyRemoteContent(payload.path, payload.content);
       }).then((unlisten) => {
@@ -1108,7 +1508,7 @@
     }
 
     const beforeUnload = () => {
-      void flushSave();
+      void flushAllSaves();
     };
     const pasteListener = (event: ClipboardEvent) => {
       void handlePaste(event);
@@ -1119,6 +1519,11 @@
     window.addEventListener('beforeunload', beforeUnload);
     window.addEventListener('paste', pasteListener);
     window.addEventListener('wheel', wheelListener, { capture: true, passive: false });
+    if (isTauriRuntime && !isMiniWindow && !isMiniControlWindow) {
+      dailyTimer = setInterval(() => {
+        void ensureCurrentDailyDocument();
+      }, 60_000);
+    }
     return () => {
       if (import.meta.env.DEV) {
         const testWindow = window as Window & { __TOPPLAN_TEST__?: TopPlanTestApi };
@@ -1130,6 +1535,16 @@
       unlistenOpenFile?.();
       unlistenMiniSettings?.();
       unlistenMiniContent?.();
+      unlistenMiniClickThrough?.();
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+      }
+      if (leftSaveTimer) {
+        clearTimeout(leftSaveTimer);
+      }
+      if (dailyTimer) {
+        clearInterval(dailyTimer);
+      }
       if (scrollTimer) {
         clearTimeout(scrollTimer);
       }
@@ -1150,8 +1565,26 @@
   onpointerdown={closeTransientPanels}
   onmousemove={revealScrollbars}
 >
-  {#if miniMode}
+  {#if isMiniControlWindow}
+    <button class="mini-through-control" title={text.disableClickThrough} onclick={disableMiniClickThroughFromControl}>
+      <MousePointer2Off size={13} />
+    </button>
+  {:else if miniMode}
     <div class="mini-note-shell" role="group" aria-label="TopPlan mini note mode">
+      {#if isMiniWindow}
+        <button
+          class:active={miniClickThrough}
+          class="mini-click-through"
+          title={miniClickThrough ? text.disableClickThrough : text.enableClickThrough}
+          onclick={toggleMiniClickThrough}
+        >
+          {#if miniClickThrough}
+            <MousePointer2Off size={11} />
+          {:else}
+            <MousePointer2 size={11} />
+          {/if}
+        </button>
+      {/if}
       <button class="mini-exit" title={isMiniWindow ? text.openInMain : text.exitMiniMode} onclick={openCurrentFileInMain}>
         <Maximize2 size={11} />
       </button>
@@ -1256,10 +1689,24 @@
           </div>
           <div class="file-list">
             {#each files as file}
-              <div class:active={file.path === settings.activeFilePath} class="file-list-item" title={file.path}>
+              <div
+                class:active={file.path === settings.activeFilePath}
+                class:split-active={file.path === settings.splitView.leftFilePath}
+                class="file-list-item"
+                title={file.path}
+              >
                 <button class="file-item-main" onclick={() => switchFile(file.path)}>
                   <FileText size={14} />
                   <span>{file.name}</span>
+                </button>
+                <button
+                  class:active={file.path === settings.splitView.leftFilePath}
+                  class="file-split-button"
+                  disabled={file.path === settings.activeFilePath}
+                  title={file.path === settings.splitView.leftFilePath ? text.closeSplitView : text.openSplitLeft}
+                  onclick={(event) => toggleSplitFile(file.path, event)}
+                >
+                  <Columns2 size={13} />
                 </button>
                 <button class="file-mini-button" title={text.openMiniNote} onclick={(event) => openFileAsMiniNote(file.path, event)}>
                   <NotepadText size={13} />
@@ -1270,29 +1717,77 @@
         </aside>
       {/if}
 
-      <section class="document-surface" onscroll={revealScrollbars}>
-        {#if sourceMode}
-          <CodeMirrorEditor
-            bind:this={sourceEditor}
-            value={content}
-            activeFilePath={settings.activeFilePath}
-            {zoom}
-            onChange={updateContent}
-            onReady={restorePendingNavigation}
-          />
-        {:else}
-          <RichMarkdownEditor
-            bind:this={richEditor}
-            value={content}
-            {images}
-            activeFilePath={settings.activeFilePath}
-            {zoom}
-            onChange={updateContent}
-            onPasteImage={handlePaste}
-            onReady={restorePendingNavigation}
-          />
+      <div class:split-open={splitOpen} class="document-layout">
+        {#if splitOpen}
+          <section
+            class:active-pane={activePane === 'left'}
+            class="document-surface document-pane left-pane"
+            aria-label={leftFile?.name ?? 'Left Markdown pane'}
+            onpointerdown={() => (activePane = 'left')}
+            onscroll={revealScrollbars}
+          >
+            <button class="pane-close-button" title={text.closeSplitView} onclick={() => closeSplitPane('left')}>
+              <X size={12} />
+            </button>
+            {#if sourceMode}
+              <CodeMirrorEditor
+                bind:this={leftSourceEditor}
+                value={leftContent}
+                activeFilePath={settings.splitView.leftFilePath}
+                {zoom}
+                onChange={updateLeftContent}
+                onReady={restorePendingNavigation}
+              />
+            {:else}
+              <RichMarkdownEditor
+                bind:this={leftRichEditor}
+                value={leftContent}
+                {images}
+                activeFilePath={settings.splitView.leftFilePath}
+                {zoom}
+                onChange={updateLeftContent}
+                onPasteImage={handlePaste}
+                onReady={restorePendingNavigation}
+              />
+            {/if}
+          </section>
         {/if}
-      </section>
+
+        <section
+          class:active-pane={activePane === 'right'}
+          class="document-surface document-pane right-pane"
+          aria-label={activeFile?.name ?? 'Right Markdown pane'}
+          onpointerdown={() => (activePane = 'right')}
+          onscroll={revealScrollbars}
+        >
+          {#if splitOpen}
+            <button class="pane-close-button" title={text.closeSplitView} onclick={() => closeSplitPane('right')}>
+              <X size={12} />
+            </button>
+          {/if}
+          {#if sourceMode}
+            <CodeMirrorEditor
+              bind:this={sourceEditor}
+              value={content}
+              activeFilePath={settings.activeFilePath}
+              {zoom}
+              onChange={updateContent}
+              onReady={restorePendingNavigation}
+            />
+          {:else}
+            <RichMarkdownEditor
+              bind:this={richEditor}
+              value={content}
+              {images}
+              activeFilePath={settings.activeFilePath}
+              {zoom}
+              onChange={updateContent}
+              onPasteImage={handlePaste}
+              onReady={restorePendingNavigation}
+            />
+          {/if}
+        </section>
+      </div>
     </section>
 
     <footer class="bottom-bar">
@@ -1316,7 +1811,7 @@
       </div>
 
       <div class="bottom-status">
-        <span class:dirty>{saving ? text.saving : dirty ? text.unsaved : text.saved}</span>
+        <span class:dirty={dirty || leftDirty}>{saving || leftSaving ? text.saving : dirty || leftDirty ? text.unsaved : text.saved}</span>
         <span><Image size={13} /> {images.length}</span>
         {#if missingImages.length > 0}
           <span class="warn"><TriangleAlert size={13} /> {missingImages.length}</span>

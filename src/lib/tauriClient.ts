@@ -172,6 +172,21 @@ export async function openMiniNoteWindow(path: string): Promise<void> {
   await invoke('open_mini_note_window', { path });
 }
 
+export function currentWindowLabel(): string {
+  requireTauri();
+  return getCurrentWindow().label;
+}
+
+export async function setMiniNoteClickThrough(parentLabel: string, enabled: boolean): Promise<void> {
+  requireTauri();
+  await invoke('set_mini_note_click_through', { parentLabel, enabled });
+}
+
+export async function onMiniNoteClickThroughChanged(callback: (enabled: boolean) => void): Promise<() => void> {
+  requireTauri();
+  return listen<boolean>('mini-note-click-through-changed', (event) => callback(event.payload));
+}
+
 export async function openFileInMain(path: string): Promise<void> {
   requireTauri();
   await invoke('open_file_in_main', { path });
