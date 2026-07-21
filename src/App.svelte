@@ -126,6 +126,7 @@
 
   const MINI_TRANSITION_MS = 150;
   const MAIN_ENTER_SETTLE_MS = 24;
+  const SPLIT_RESIZE_SETTLE_MS = 60;
   const REDUCED_TRANSITION_MS = 1;
   const MINI_BACKGROUND_PRESETS = ['#ffffff', '#f7fbff', '#f4fbf2', '#fff8ec', '#fff6fa', '#f6f3ff'];
   const MINI_COLOR_CHANNELS: Array<{ key: RgbChannel; label: string }> = [
@@ -694,6 +695,8 @@
       return;
     }
     try {
+      await tick();
+      await delay(SPLIT_RESIZE_SETTLE_MS);
       await setMainSplitOpen(false);
     } catch (error) {
       setError(error);
@@ -1587,6 +1590,7 @@
           class:active={miniClickThrough}
           class="mini-click-through"
           title={miniClickThrough ? text.disableClickThrough : text.enableClickThrough}
+          aria-pressed={miniClickThrough}
           onclick={toggleMiniClickThrough}
         >
           {#if miniClickThrough}

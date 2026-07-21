@@ -371,6 +371,16 @@ test('single pane does not draw an active divider below the titlebar', async ({ 
   expect(singlePaneShadow).toBe('none');
 });
 
+test('split panes do not draw an active divider below the titlebar', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+
+  const paneShadows = await page.locator('.document-pane').evaluateAll((panes) => {
+    return panes.map((pane) => getComputedStyle(pane).boxShadow);
+  });
+  expect(paneShadows).toEqual(['none', 'none']);
+});
+
 test('mini note scrollbar track starts below the top controls', async ({ page }) => {
   await loadFixture(page, ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
   await page.click('button[title="便签模式"]');
@@ -420,6 +430,17 @@ test('split view keeps the file sidebar overlaid instead of consuming an editor 
   });
   expect(layout.sidebarPosition).toBe('absolute');
   expect(Math.abs(layout.workspaceWidth - layout.documentWidth)).toBeLessThanOrEqual(1);
+});
+
+test('split sidebar keeps the same width as the normal sidebar', async ({ page }) => {
+  await page.setViewportSize({ width: 1260, height: 900 });
+  await loadFixture(page);
+  await page.locator('.app-menu-toggle').click();
+  const normalWidth = await page.locator('.file-sidebar').evaluate((sidebar) => sidebar.getBoundingClientRect().width);
+
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+  const splitWidth = await page.locator('.file-sidebar').evaluate((sidebar) => sidebar.getBoundingClientRect().width);
+  expect(splitWidth).toBe(normalWidth);
 });
 
 test('split view leaves sidebar and toolbar controls clickable', async ({ page }) => {

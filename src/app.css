@@ -389,10 +389,6 @@ button {
   box-shadow: 8px 0 22px rgba(27, 50, 76, 0.08);
 }
 
-.workspace-main.split-open .file-sidebar {
-  width: clamp(172px, 17%, 420px);
-}
-
 .file-create input,
 .setting-row input:not([type='checkbox']),
 .setting-row select {
@@ -560,10 +556,6 @@ input[type='checkbox']:checked {
 
 .document-layout.split-open .left-pane {
   border-right: 1px solid var(--line);
-}
-
-.document-layout.split-open .document-pane.active-pane {
-  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--accent) 46%, transparent);
 }
 
 .pane-close-button {
