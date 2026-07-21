@@ -285,18 +285,18 @@ export function synchronizeTaskHierarchy(previousMarkdown: string, nextMarkdown:
   }
 
   const lines = nextMarkdown.replace(/\r\n?/g, '\n').split('\n');
-  const explicitlyChecked = new Set<number>();
+  const explicitlyChanged = new Set<number>();
 
   tasks.forEach((task, taskIndex) => {
     const previous = previousTasks.get(task.sourceLineIndex);
-    if (previous && !previous.checked && task.checked) {
-      explicitlyChecked.add(taskIndex);
+    if (previous && previous.checked !== task.checked) {
+      explicitlyChanged.add(taskIndex);
     }
   });
 
-  for (const taskIndex of explicitlyChecked) {
+  for (const taskIndex of explicitlyChanged) {
     if (tasks[taskIndex].childIndexes.length > 0) {
-      setTaskDescendantsChecked(lines, tasks, taskIndex, true);
+      setTaskDescendantsChecked(lines, tasks, taskIndex, tasks[taskIndex].checked);
     }
   }
 

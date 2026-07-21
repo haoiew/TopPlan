@@ -271,6 +271,35 @@ test('checking a parent task checks all visually indented children', async ({ pa
   );
 });
 
+test('unchecking a parent task unchecks all visually indented children', async ({ page }) => {
+  const document = [
+    '- [x] 6. 建模流程梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [x] 已有代码梳理',
+  ].join('\n');
+  await loadFixture(page, document);
+  await page.click('button[title="便签模式"]');
+  await page.locator('.mini-task').filter({ hasText: '建模流程梳理' }).locator('input').uncheck();
+
+  await expect.poll(async () => (await snapshot(page)).content).toBe(
+    document.replaceAll('- [x]', '- [ ]'),
+  );
+});
+
+test('rich editor can uncheck a completed parent task and its children', async ({ page }) => {
+  const document = [
+    '- [x] 6. 建模流程梳理',
+    '<!-- topplan-indent:2 -->',
+    '- [x] 已有代码梳理',
+  ].join('\n');
+  await loadFixture(page, document);
+  await page.locator('.rich-editor-host .ProseMirror input[type="checkbox"]').first().uncheck();
+
+  await expect.poll(async () => (await snapshot(page)).content.trimEnd()).toBe(
+    document.replaceAll('- [x]', '- [ ]').trimEnd(),
+  );
+});
+
 test('checking every child automatically checks its parent', async ({ page }) => {
   const document = [
     '- [ ] 6. 建模流程梳理',
