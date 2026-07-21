@@ -363,3 +363,31 @@ test('split view renders editable left and right documents and either close butt
   await expect(page.locator('.document-pane')).toHaveCount(1);
   await expect(page.locator('.right-pane')).toContainText('长期计划');
 });
+
+test('single pane does not draw an active divider below the titlebar', async ({ page }) => {
+  await loadFixture(page, ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
+
+  const singlePaneShadow = await page.locator('.right-pane').evaluate((element) => getComputedStyle(element).boxShadow);
+  expect(singlePaneShadow).toBe('none');
+});
+
+test('mini note scrollbar track starts below the top controls', async ({ page }) => {
+  await loadFixture(page, ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
+  await page.click('button[title="便签模式"]');
+  const miniContent = page.locator('.mini-note-content');
+  const scrollbarTrackTop = await miniContent.evaluate((element) => {
+    return Number.parseFloat(getComputedStyle(element, '::-webkit-scrollbar-track').marginBlockStart) || 0;
+  });
+  expect(scrollbarTrackTop).toBeGreaterThanOrEqual(28);
+});
+
+test('mini note top center is a draggable move zone', async ({ page }) => {
+  await loadFixture(page, ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
+  await page.click('button[title="便签模式"]');
+  const topHitTarget = await page.locator('.mini-note-shell').evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const target = document.elementFromPoint(box.left + box.width / 2, box.top + 7);
+    return target?.className ?? '';
+  });
+  expect(topHitTarget).toContain('mini-move-zone');
+});

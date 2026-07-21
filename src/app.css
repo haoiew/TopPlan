@@ -550,7 +550,7 @@ input[type='checkbox']:checked {
   border-right: 1px solid var(--line);
 }
 
-.document-pane.active-pane {
+.document-layout.split-open .document-pane.active-pane {
   box-shadow: inset 0 2px 0 color-mix(in srgb, var(--accent) 46%, transparent);
 }
 
@@ -786,7 +786,7 @@ input[type='checkbox']:checked {
   right: 71px;
   left: 16px;
   z-index: 4;
-  height: 13px;
+  height: 18px;
   cursor: default;
 }
 
@@ -804,7 +804,8 @@ input[type='checkbox']:checked {
 }
 
 .mini-resize-n {
-  top: 3px;
+  top: 0;
+  height: 3px;
 }
 
 .mini-resize-s {
@@ -1631,7 +1632,7 @@ input[type='checkbox']:checked {
 }
 
 .mini-note-content::-webkit-scrollbar-track {
-  margin-block-start: 20px;
+  margin-block-start: 32px;
 }
 
 ::-webkit-scrollbar-thumb {
