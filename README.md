@@ -1,94 +1,56 @@
 # TopPlan
 
-TopPlan is a lightweight Windows desktop planner built with Tauri 2, Svelte, TypeScript, CodeMirror 6, and TipTap. It keeps compact Markdown editing surfaces on top of the desktop so interrupted work can be captured quickly.
+[简体中文](README.zh-CN.md)
 
-## Current Capabilities
+TopPlan is a lightweight Windows desktop planner for today’s plan and quick records. It stays close to the desktop, keeps your content in plain Markdown files, and avoids turning a simple daily plan into a complex project-management system.
 
-- Local-only data. The first launch asks for a data folder and reads existing `.md` files directly.
-- Default single-file workflow with `TopPlan.md`.
-- Optional workday file mode using `YYYY-MM-DD.md`, Chinese statutory holiday/adjusted-workday data, and automatic plan rollover.
-- Rich Markdown editing, source editing, and persistent two-file left/right editing.
-- Markdown task lists, links, code blocks, and local images.
-- Mini note windows for opening Markdown files as taskbar-free always-on-top widgets, including click-through mode.
-- Mini note opacity and background color settings.
-- Editor zoom controls with cursor and scroll position preservation between editor modes.
-- Local image reference index in `.topplan/image-index.json`.
-- Pasted-image storage, reconciliation of unused pasted images, and cleanup of stale deleted image assets.
-- Always-on-top frameless window, tray menu, single-instance behavior, global hotkey plumbing, and autostart setting.
+## Download
 
-## Project Environment
+Download the latest Windows installer from [GitHub Releases](https://github.com/haoiew/TopPlan/releases/latest). TopPlan supports 64-bit Windows 10 and later; the Microsoft Edge WebView2 Runtime is required and is already included with most current Windows installations.
 
-Do not install dependencies into the base Miniforge environment.
+## Core Features
 
-Preferred environment creation command:
+- **Today-first planning**: work in one Markdown plan or generate workday files named `YYYY-MM-DD.md`, with unfinished tasks carried forward when appropriate.
+- **Fast capture, readable later**: edit Markdown in rich-text or source mode, including task lists, timestamps, links, code blocks, and local images.
+- **Focused desktop presence**: keep the frameless window on top, open small taskbar-free mini notes, and enable click-through when a note should only be visible.
+- **Your files stay yours**: choose a local data folder on first launch. TopPlan reads and writes ordinary `.md` files directly; it does not require an account or cloud service.
+- **Useful without ceremony**: use a single plan, two side-by-side documents, or daily rollover without setting up projects, databases, or collaboration spaces.
 
-```powershell
-mamba create -y -n topplan -c conda-forge nodejs=24 pnpm git
-```
+## Design Principles
 
-In this setup session, `mamba create` and `mamba create --dry-run` both stalled during solving with no progress output. The environment was created in the same Miniforge env location with:
+TopPlan is designed around a narrow job: make today’s work visible, record it as it happens, and carry the important unfinished pieces into the next workday. The interface stays compact so the plan can remain available without taking over the screen.
 
-```powershell
-conda create -y -p C:\Users\138721\AppData\Local\miniforge3\envs\topplan -c conda-forge nodejs=24 pnpm git
-```
+Markdown is the long-term format of record. It keeps plans portable, readable outside the app, and under your control. The app adds fast editing and daily workflow support without locking the content into a proprietary data model.
 
-Use the project environment tools directly:
+## Getting Started
 
-```powershell
-& 'C:\Users\138721\AppData\Local\miniforge3\envs\topplan\Library\share\pnpm\node_modules\.bin\pnpm.cmd' install
-```
+1. Install and open TopPlan.
+2. Select a local folder for plan files on first launch.
+3. Edit `TopPlan.md`, or enable workday files and start with today’s plan.
+4. Open an important file as a mini note when it should stay visible on the desktop.
 
-## Windows Prerequisites
+## Development
 
-Tauri Windows builds also require Rust and Microsoft C++ Build Tools.
-
-- WebView2 Runtime: detected on this machine.
-- Rust toolchain: detected after running the downloaded `rustup-init.exe` directly.
-- Microsoft C++ Build Tools: not detected by `vswhere`; this is still required before `pnpm tauri dev` or `pnpm tauri build`.
-
-Verify Rust and install Microsoft C++ Build Tools before running Tauri build/dev commands:
+TopPlan is built with Tauri 2, Svelte 5, TypeScript, CodeMirror 6, and TipTap.
 
 ```powershell
-rustup default stable
-cargo -V
-rustc -V
-```
-
-## Development Commands
-
-Frontend-only type/build checks:
-
-```powershell
+pnpm install
 pnpm check
-pnpm build
-```
-
-Desktop development after Rust/MSVC prerequisites are installed:
-
-```powershell
-pnpm tauri dev
-```
-
-Windows installer build:
-
-```powershell
+pnpm test:e2e
 pnpm tauri build
 ```
 
-## Data Directory Rules
+Desktop builds require Rust, Microsoft C++ Build Tools, and WebView2 on Windows. Do not install project dependencies into the Miniforge base environment.
 
-- Select any local folder as the TopPlan workspace.
-- Existing `.md` files are treated as historical plan files and are not migrated.
-- If no Markdown files exist, TopPlan creates `TopPlan.md`.
-- With daily mode enabled, TopPlan creates or opens the current workday file in the main/right pane and preserves a manually opened left pane.
-- Local image paths are resolved in this order:
-  1. Current Markdown file directory
-  2. Workspace root
-  3. Absolute path
-- `.topplan/image-index.json` is rebuildable and should not be treated as source data.
+## Local Data
+
+- The first launch asks for a data folder; this data remains local.
+- Existing Markdown files are used directly and are not migrated.
+- `.topplan/image-index.json` is a rebuildable local image index, not source data.
+- The repository ignores local application data and personal Markdown files stored at the repository root.
 
 ## License and Attribution
 
 TopPlan is available under the [Creative Commons Attribution 4.0 International](LICENSE) license. You may use, modify, and distribute it, including for commercial purposes.
 
-When sharing a modified version or a product based on TopPlan, retain the attribution in [NOTICE](NOTICE): credit `TopPlan` by `Haoiew`, link to the project source, link to the license, and clearly state any changes you made.
+When sharing a modified version or a product based on TopPlan, retain the attribution in [NOTICE](NOTICE): credit `TopPlan` by `Haoiew`, link to the project source and license, and clearly state any changes you made.

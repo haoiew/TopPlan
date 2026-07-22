@@ -27,6 +27,7 @@ data/
 # Personal Markdown notes kept beside the source tree
 /*.md
 !/README.md
+!/README.zh-CN.md
 !/CHANGELOG.md
 
 # Editor directories and files
