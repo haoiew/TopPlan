@@ -10,8 +10,10 @@
     normalizeEscapedInlineMarkdown,
     normalizeMarkdownDocumentForRichEditor,
     normalizeSerializedTaskMarkers,
+    isTopplanIndentComment,
     sourceLineAnchors,
     sourceLineAnchorsForRichBlocks,
+    stripTopplanIndentComments,
   } from './markdownView';
   import type { ImageReference } from '../types';
 
@@ -25,7 +27,6 @@
 
   const TASK_TIMESTAMP_ATTR = 'data-topplan-time';
   const VISUAL_INDENT_ATTR = 'data-topplan-visual-indent';
-  const TOPPLAN_INDENT_COMMENT = /^\s*<!--\s*topplan-indent:(\d+)\s*-->\s*$/i;
   const BOLD_STAR_INPUT_REGEX = /\*\*(?!\s+\*\*)((?:[^*]|\*(?!\*))+?)\*\*(?!\s+\*\*)$/;
   const BOLD_STAR_PASTE_REGEX = /\*\*(?!\s+\*\*)((?:[^*]|\*(?!\*))+?)\*\*(?!\s+\*\*)/g;
   const BOLD_UNDERSCORE_INPUT_REGEX = /(?:^|\s)(__(?!\s+__)((?:[^_]+))__(?!\s+__))$/;
@@ -200,33 +201,6 @@
       ];
     },
   });
-
-  function stripTopplanIndentComments(markdown: string): { markdown: string; indents: Map<number, number> } {
-    const output: string[] = [];
-    const indents = new Map<number, number>();
-    let pendingIndent: number | null = null;
-
-    for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
-      const marker = line.match(TOPPLAN_INDENT_COMMENT);
-      if (marker) {
-        pendingIndent = Math.max(0, Number(marker[1]) || 0);
-        continue;
-      }
-
-      output.push(line);
-      if (pendingIndent !== null && line.trim() !== '') {
-        if (pendingIndent > 0) {
-          indents.set(output.length, pendingIndent);
-        }
-        pendingIndent = null;
-      }
-    }
-
-    return {
-      markdown: output.join('\n'),
-      indents,
-    };
-  }
 
   function indentableJsonNodes(root: { type?: string; attrs?: Record<string, unknown>; content?: unknown[] }): Array<{ attrs?: Record<string, unknown>; type?: string }> {
     const nodes: Array<{ attrs?: Record<string, unknown>; type?: string }> = [];
@@ -712,7 +686,7 @@
     let currentEditorLine = 0;
 
     for (let index = 0; index < lines.length; index += 1) {
-      if (TOPPLAN_INDENT_COMMENT.test(lines[index])) {
+      if (isTopplanIndentComment(lines[index])) {
         continue;
       }
       currentEditorLine += 1;
