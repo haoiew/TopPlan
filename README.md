@@ -1,16 +1,15 @@
-# TopPlan - Local-first Windows Daily Planner
+# TopPlan - Local-first Daily Planner
 
 English | [简体中文](README.zh-CN.md)
 
 [![Latest release](https://img.shields.io/github/v/release/haoiew/TopPlan?display_name=tag&sort=semver)](https://github.com/haoiew/TopPlan/releases/latest)
-[![Windows 10+](https://img.shields.io/badge/Windows-10%2B-0078D4?logo=windows11&logoColor=white)](https://github.com/haoiew/TopPlan/releases/latest)
 [![License: CC BY 4.0](https://img.shields.io/github/license/haoiew/TopPlan)](LICENSE)
 
-TopPlan is an open-source, local-first Windows daily planner and Markdown task manager for today's plan, quick work notes, and visible desktop reminders. It keeps planning lightweight: no account, no cloud dependency, and no project-management setup before you can start writing.
+TopPlan is an open-source, local-first daily planner and Markdown task manager for today's plan, quick work notes, and visible desktop reminders. It keeps planning lightweight: no account, no cloud dependency, and no project-management setup before you can start writing.
 
 ![TopPlan showing a daily plan and work log in split view](docs/assets/topplan-overview.png)
 
-**[Download the latest Windows installer](https://github.com/haoiew/TopPlan/releases/latest)**
+**[Download the latest release](https://github.com/haoiew/TopPlan/releases/latest)**
 
 ## Why TopPlan
 
@@ -37,7 +36,7 @@ Many productivity tools are built around projects, teams, and databases. TopPlan
 3. Edit `TopPlan.md`, or enable workday files and start with today's plan.
 4. Open an important file as a mini note when it should remain visible on the desktop.
 
-TopPlan supports 64-bit Windows 10 and later. Microsoft Edge WebView2 Runtime is required and is already included with most current Windows installations. The current installer is unsigned, so Windows may display an unknown publisher warning.
+The current release supports 64-bit Windows 10 and later. Microsoft Edge WebView2 Runtime is required and is already included with most current installations. The installer is unsigned, so the system may display an unknown publisher warning.
 
 ## Design Principles
 

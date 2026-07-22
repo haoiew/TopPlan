@@ -2,7 +2,7 @@
   "name": "topplan",
   "private": true,
   "version": "0.3.0",
-  "description": "A local-first Windows daily planner and Markdown task manager for today's plan and quick work notes.",
+  "description": "A local-first daily planner and Markdown task manager for today's plan and quick work notes.",
   "keywords": [
     "windows",
     "desktop-app",

@@ -6,7 +6,7 @@ authors:
   - family-names: "Haoiew"
     website: "https://github.com/haoiew"
 abstract: >-
-  TopPlan is a local-first Windows daily planner and Markdown task manager
+  TopPlan is a local-first daily planner and Markdown task manager
   for today's plan, quick work notes, and always-visible desktop reminders.
 version: 0.3.0
 date-released: 2026-07-22
