@@ -417,7 +417,7 @@ test('mini note scrollbar track starts below the top controls', async ({ page })
   const scrollbarTrackTop = await miniContent.evaluate((element) => {
     return Number.parseFloat(getComputedStyle(element, '::-webkit-scrollbar-track').marginBlockStart) || 0;
   });
-  expect(scrollbarTrackTop).toBeGreaterThanOrEqual(28);
+  expect(scrollbarTrackTop).toBeGreaterThanOrEqual(38);
 });
 
 test('mini note top center is a draggable move zone', async ({ page }) => {
@@ -456,6 +456,7 @@ test('mini note top controls center their icons and reveal inactive controls on 
       const style = getComputedStyle(control);
       return {
         className: control.className,
+        left: button.left,
         deltaX: Math.abs(button.left + button.width / 2 - (icon.left + icon.width / 2)),
         deltaY: Math.abs(button.top + button.height / 2 - (icon.top + icon.height / 2)),
         padding: style.padding,
@@ -469,6 +470,11 @@ test('mini note top controls center their icons and reveal inactive controls on 
     expect(control.deltaY, control.className).toBeLessThanOrEqual(0.5);
     expect(control.padding, control.className).toBe('0px');
   }
+  expect([...geometry].sort((a, b) => a.left - b.left).map((control) => control.className)).toEqual([
+    'mini-exit',
+    'mini-close',
+    'mini-click-through',
+  ]);
   await page.locator('.mini-note-shell').hover();
   for (const selector of ['.mini-click-through', '.mini-exit', '.mini-close']) {
     await expect(page.locator(selector)).toHaveCSS('opacity', '0.52');
@@ -540,6 +546,44 @@ test('split sidebar keeps the same width as the normal sidebar', async ({ page }
   await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
   const splitWidth = await page.locator('.file-sidebar').evaluate((sidebar) => sidebar.getBoundingClientRect().width);
   expect(splitWidth).toBe(normalWidth);
+});
+
+test('split sidebar uses outline-only rows and persistent blue split icons for both files', async ({ page }) => {
+  await loadFixture(page);
+  await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));
+  await page.locator('.app-menu-toggle').click();
+
+  const appearance = await page.locator('.file-list-item.active, .file-list-item.split-active').evaluateAll((rows) => {
+    const accentProbe = document.createElement('span');
+    accentProbe.style.color = 'var(--accent)';
+    document.body.append(accentProbe);
+    const accentColor = getComputedStyle(accentProbe).color;
+    accentProbe.remove();
+    return rows.map((row) => {
+      const rowStyle = getComputedStyle(row);
+      const buttonStyle = getComputedStyle(row.querySelector('.file-split-button'));
+      return {
+        className: row.className,
+        rowBackground: rowStyle.backgroundColor,
+        rowBorder: rowStyle.borderTopColor,
+        buttonBackground: buttonStyle.backgroundColor,
+        buttonColor: buttonStyle.color,
+        buttonOpacity: buttonStyle.opacity,
+        buttonShadow: buttonStyle.boxShadow,
+        accentColor,
+      };
+    });
+  });
+
+  expect(appearance).toHaveLength(2);
+  expect(new Set(appearance.map((item) => item.rowBackground)).size).toBe(1);
+  expect(new Set(appearance.map((item) => item.rowBorder)).size).toBe(1);
+  for (const item of appearance) {
+    expect(item.buttonBackground, item.className).toBe('rgba(0, 0, 0, 0)');
+    expect(item.buttonColor, item.className).toBe(item.accentColor);
+    expect(item.buttonOpacity, item.className).toBe('1');
+    expect(item.buttonShadow, item.className).toBe('none');
+  }
 });
 
 test('split view leaves sidebar and toolbar controls clickable', async ({ page }) => {

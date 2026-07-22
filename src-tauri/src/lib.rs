@@ -37,7 +37,7 @@ const MINI_WINDOW_MAX_HEIGHT: f64 = 560.0;
 const MINI_WINDOW_MARGIN: f64 = 28.0;
 const MINI_WINDOW_GAP: f64 = 12.0;
 const MINI_CONTROL_SIZE: f64 = 22.0;
-const MINI_CONTROL_RIGHT_OFFSET: i32 = 71;
+const MINI_CONTROL_RIGHT_OFFSET: i32 = 31;
 const MINI_CONTROL_TOP_OFFSET: i32 = 7;
 
 #[derive(Default)]
@@ -1544,6 +1544,6 @@ mod tests {
             PhysicalSize::new(260, 320),
             1.25,
         );
-        assert_eq!(geometry, (271, 59, 28));
+        assert_eq!(geometry, (321, 59, 28));
     }
 }

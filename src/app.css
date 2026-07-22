@@ -503,8 +503,7 @@ input[type='checkbox']:checked {
 }
 
 .file-mini-button:hover,
-.file-split-button:hover,
-.file-split-button.active {
+.file-split-button:hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-strong);
   opacity: 1;
@@ -516,15 +515,18 @@ input[type='checkbox']:checked {
   pointer-events: none;
 }
 
-.file-list-item.active {
+.file-list-item.active,
+.file-list-item.split-active {
   border-color: var(--line-strong);
   background: var(--surface);
   color: var(--accent-strong);
 }
 
-.file-list-item.split-active {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line-strong));
-  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
+.workspace-main.split-open .file-list-item.active .file-split-button,
+.workspace-main.split-open .file-list-item.split-active .file-split-button {
+  background: transparent;
+  color: var(--accent);
+  opacity: 1;
 }
 
 .file-item-main span {
@@ -740,15 +742,15 @@ input[type='checkbox']:checked {
 }
 
 .mini-click-through {
-  right: 47px;
+  right: 7px;
 }
 
 .mini-exit {
-  right: 27px;
+  right: 47px;
 }
 
 .mini-close {
-  right: 7px;
+  right: 27px;
 }
 
 .mini-note-shell:hover .mini-click-through,
@@ -1669,7 +1671,7 @@ input[type='checkbox']:checked {
 }
 
 .mini-note-content::-webkit-scrollbar-track {
-  margin-block-start: 32px;
+  margin-block-start: 38px;
 }
 
 ::-webkit-scrollbar-thumb {
