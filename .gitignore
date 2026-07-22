@@ -24,6 +24,11 @@ src-tauri/gen
 data/
 .topplan/
 
+# Personal Markdown notes kept beside the source tree
+/*.md
+!/README.md
+!/CHANGELOG.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

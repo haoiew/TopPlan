@@ -1,7 +1,7 @@
 {
   "name": "topplan",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A lightweight always-on-top local Markdown planner for Windows.",
   "type": "module",
   "scripts": {

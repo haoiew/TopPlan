@@ -86,3 +86,9 @@ pnpm tauri build
   2. Workspace root
   3. Absolute path
 - `.topplan/image-index.json` is rebuildable and should not be treated as source data.
+
+## License and Attribution
+
+TopPlan is available under the [Creative Commons Attribution 4.0 International](LICENSE) license. You may use, modify, and distribute it, including for commercial purposes.
+
+When sharing a modified version or a product based on TopPlan, retain the attribution in [NOTICE](NOTICE): credit `TopPlan` by `Haoiew`, link to the project source, link to the license, and clearly state any changes you made.
