@@ -17,9 +17,10 @@ use tauri::{
 use windows::core::BOOL;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{HWND, LPARAM},
+    Foundation::{GetLastError, SetLastError, HWND, LPARAM, WIN32_ERROR},
     UI::WindowsAndMessaging::{
-        EnumChildWindows, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW, GWL_EXSTYLE,
+        EnumChildWindows, GetClassNameW, GetWindowLongPtrW, IsWindow, SetWindowLongPtrW,
+        SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
         WS_EX_TRANSPARENT,
     },
 };
@@ -36,14 +37,23 @@ const MINI_WINDOW_MAX_HEIGHT: f64 = 560.0;
 const MINI_WINDOW_MARGIN: f64 = 28.0;
 const MINI_WINDOW_GAP: f64 = 12.0;
 const MINI_CONTROL_SIZE: f64 = 22.0;
-const MINI_CONTROL_RIGHT_OFFSET: i32 = 68;
-const MINI_CONTROL_TOP_OFFSET: i32 = 10;
+const MINI_CONTROL_RIGHT_OFFSET: i32 = 71;
+const MINI_CONTROL_TOP_OFFSET: i32 = 7;
 
 #[derive(Default)]
 struct MiniNoteWindowRegistry(Mutex<HashMap<String, String>>);
 
 #[derive(Default)]
-struct ClickThroughWindowRegistry(Mutex<HashMap<String, HashMap<isize, isize>>>);
+struct ClickThroughState {
+    enabled: bool,
+    window_styles: HashMap<String, HashMap<isize, isize>>,
+}
+
+#[derive(Default)]
+struct ClickThroughWindowRegistry {
+    state: Mutex<ClickThroughState>,
+    operation: Mutex<()>,
+}
 
 #[derive(Clone, Copy)]
 struct MainWindowFrame {
@@ -803,8 +813,8 @@ fn open_mini_note_window_internal(
                 #[cfg(target_os = "windows")]
                 if let Some(parent) = app_for_close.get_webview_window(&parent_label) {
                     let click_registry = app_for_close.state::<ClickThroughWindowRegistry>();
-                    if let Ok(mut windows) = click_registry.0.lock() {
-                        if let Some(baselines) = windows.get_mut(&parent_label) {
+                    if let Ok(mut state) = click_registry.state.lock() {
+                        if let Some(baselines) = state.window_styles.get_mut(&parent_label) {
                             let _ = sync_native_child_click_through(&parent, baselines, true);
                         }
                     };
@@ -816,8 +826,8 @@ fn open_mini_note_window_internal(
                     windows.remove(&normalized_path);
                 };
                 let click_registry = app_for_close.state::<ClickThroughWindowRegistry>();
-                if let Ok(mut windows) = click_registry.0.lock() {
-                    windows.remove(&parent_label);
+                if let Ok(mut state) = click_registry.state.lock() {
+                    state.window_styles.remove(&parent_label);
                 }
                 if let Some(control) = app_for_close.get_webview_window(&mini_control_label(&parent_label)) {
                     let _ = control.close();
@@ -826,6 +836,7 @@ fn open_mini_note_window_internal(
             _ => {}
         }
     });
+    enable_new_mini_note_click_through_if_needed(app, window.label())?;
     Ok(())
 }
 
@@ -868,6 +879,18 @@ fn mini_control_label(parent_label: &str) -> String {
     format!("mini-note-control-{parent_label}")
 }
 
+fn mini_control_geometry(
+    position: PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    scale: f64,
+) -> (i32, i32, i32) {
+    let x = position.x + size.width as i32
+        - (MINI_CONTROL_RIGHT_OFFSET as f64 * scale).round() as i32;
+    let y = position.y + (MINI_CONTROL_TOP_OFFSET as f64 * scale).round() as i32;
+    let control_size = (MINI_CONTROL_SIZE * scale).round().max(1.0) as i32;
+    (x, y, control_size)
+}
+
 fn position_mini_control(app: &AppHandle, parent_label: &str) -> Result<(), String> {
     let Some(parent) = app.get_webview_window(parent_label) else {
         return Ok(());
@@ -878,13 +901,33 @@ fn position_mini_control(app: &AppHandle, parent_label: &str) -> Result<(), Stri
     let position = parent.outer_position().map_err(|error| error.to_string())?;
     let size = parent.outer_size().map_err(|error| error.to_string())?;
     let scale = parent.scale_factor().map_err(|error| error.to_string())?;
-    control
-        .set_position(Position::Physical(PhysicalPosition::new(
-            position.x + size.width as i32
-                - (MINI_CONTROL_RIGHT_OFFSET as f64 * scale).round() as i32,
-            position.y + (MINI_CONTROL_TOP_OFFSET as f64 * scale).round() as i32,
-        )))
+    let (x, y, control_size) = mini_control_geometry(position, size, scale);
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let hwnd = control.hwnd().map_err(|error| error.to_string())?;
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            control_size,
+            control_size,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
         .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        control
+            .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                control_size as u32,
+                control_size as u32,
+            )))
+            .map_err(|error| error.to_string())?;
+        control
+            .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -920,10 +963,28 @@ fn native_child_window_handles<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "windows")]
-fn apply_native_window_style(handle: isize, style: isize) {
+fn native_window_class(handle: isize) -> String {
+    let mut buffer = [0u16; 256];
+    let length = unsafe { GetClassNameW(HWND(handle as _), &mut buffer) };
+    String::from_utf16_lossy(&buffer[..length.max(0) as usize])
+}
+
+#[cfg(target_os = "windows")]
+fn apply_native_window_style(handle: isize, style: isize) -> Result<(), String> {
     unsafe {
+        SetLastError(WIN32_ERROR(0));
         SetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE, style);
+        let error = GetLastError();
+        let after = GetWindowLongPtrW(HWND(handle as _), GWL_EXSTYLE);
+        if after != style {
+            return Err(format!(
+                "Failed to set click-through style on {} (HWND 0x{handle:X}): desired 0x{style:X}, got 0x{after:X}, error {}.",
+                native_window_class(handle),
+                error.0
+            ));
+        }
     }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -941,7 +1002,7 @@ fn sync_native_child_click_through<R: tauri::Runtime>(
             baseline
         };
         if current_style != desired_style {
-            apply_native_window_style(handle, desired_style);
+            apply_native_window_style(handle, desired_style)?;
         }
     }
     Ok(())
@@ -963,11 +1024,31 @@ fn enable_native_click_through<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "windows")]
+fn start_click_through_resync(app: AppHandle, parent_label: String) {
+    let _ = std::thread::Builder::new()
+        .name(format!("click-through-{parent_label}"))
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let Some(parent) = app.get_webview_window(&parent_label) else {
+                break;
+            };
+            let registry = app.state::<ClickThroughWindowRegistry>();
+            let Ok(mut state) = registry.state.lock() else {
+                break;
+            };
+            let Some(baselines) = state.window_styles.get_mut(&parent_label) else {
+                break;
+            };
+            let _ = sync_native_child_click_through(&parent, baselines, true);
+        });
+}
+
+#[cfg(target_os = "windows")]
 fn restore_native_window_styles(styles: &HashMap<isize, isize>) {
     for (handle, style) in styles {
         let hwnd = HWND(*handle as _);
         if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-            apply_native_window_style(*handle, *style);
+            let _ = apply_native_window_style(*handle, *style);
         }
     }
 }
@@ -1070,119 +1151,221 @@ fn set_main_split_open(
     Ok(())
 }
 
-#[tauri::command]
-fn set_mini_note_click_through(
-    app: AppHandle,
-    click_registry: State<'_, ClickThroughWindowRegistry>,
-    parent_label: String,
-    enabled: bool,
-) -> Result<(), String> {
-    if !parent_label.starts_with("mini-note-") || parent_label.starts_with("mini-note-control-") {
-        return Err("Click-through is only available for mini note windows.".to_string());
-    }
-    let Some(parent) = app.get_webview_window(&parent_label) else {
-        return Err("Mini note window is no longer available.".to_string());
-    };
-    let control_label = mini_control_label(&parent_label);
+fn is_mini_note_window_label(label: &str) -> bool {
+    label.starts_with("mini-note-") && !label.starts_with("mini-note-control-")
+}
 
-    if enabled {
-        #[cfg(target_os = "windows")]
-        let already_enabled = click_registry
-            .0
+fn mini_note_window_labels(app: &AppHandle) -> Vec<String> {
+    let mut labels = app
+        .webview_windows()
+        .keys()
+        .filter(|label| is_mini_note_window_label(label))
+        .cloned()
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels
+}
+
+fn ensure_mini_control_window(app: &AppHandle, parent_label: &str) -> Result<(), String> {
+    let control_label = mini_control_label(parent_label);
+    if app.get_webview_window(&control_label).is_none() {
+        let encoded_parent = general_purpose::URL_SAFE_NO_PAD.encode(parent_label.as_bytes());
+        WebviewWindowBuilder::new(
+            app,
+            &control_label,
+            WebviewUrl::App(
+                format!("index.html?topplanMode=mini-control&parent={encoded_parent}").into(),
+            ),
+        )
+        .title("TopPlan 鼠标穿透")
+        .inner_size(MINI_CONTROL_SIZE, MINI_CONTROL_SIZE)
+        .decorations(false)
+        .transparent(true)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .shadow(false)
+        .visible(false)
+        .build()
+        .map_err(|error| error.to_string())?;
+    }
+    position_mini_control(app, parent_label)?;
+    if let Some(control) = app.get_webview_window(&control_label) {
+        control.show().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn enable_mini_note_click_through_window(
+    app: &AppHandle,
+    registry: &ClickThroughWindowRegistry,
+    parent_label: &str,
+) -> Result<(), String> {
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return Ok(());
+    };
+    ensure_mini_control_window(app, parent_label)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let already_enabled = registry
+            .state
             .lock()
             .map_err(|error| error.to_string())?
-            .contains_key(&parent_label);
-
-        if app.get_webview_window(&control_label).is_none() {
-            let encoded_parent = general_purpose::URL_SAFE_NO_PAD.encode(parent_label.as_bytes());
-            WebviewWindowBuilder::new(
-                &app,
-                &control_label,
-                WebviewUrl::App(
-                    format!("index.html?topplanMode=mini-control&parent={encoded_parent}").into(),
-                ),
-            )
-            .title("TopPlan 鼠标穿透")
-            .inner_size(MINI_CONTROL_SIZE, MINI_CONTROL_SIZE)
-            .decorations(false)
-            .transparent(true)
-            .resizable(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .focused(false)
-            .shadow(false)
-            .build()
-            .map_err(|error| error.to_string())?;
-        }
-        position_mini_control(&app, &parent_label)?;
-        if let Some(control) = app.get_webview_window(&control_label) {
-            control.show().map_err(|error| error.to_string())?;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            if already_enabled {
-                let mut windows = click_registry.0.lock().map_err(|error| error.to_string())?;
-                if let Some(baselines) = windows.get_mut(&parent_label) {
-                    sync_native_child_click_through(&parent, baselines, true)?;
-                }
-                app.emit_to(&parent_label, "mini-note-click-through-changed", true)
-                    .map_err(|error| error.to_string())?;
-                return Ok(());
+            .window_styles
+            .contains_key(parent_label);
+        if already_enabled {
+            let mut state = registry.state.lock().map_err(|error| error.to_string())?;
+            if let Some(baselines) = state.window_styles.get_mut(parent_label) {
+                sync_native_child_click_through(&parent, baselines, true)?;
             }
+        } else {
             let styles = match enable_native_click_through(&parent) {
                 Ok(styles) => styles,
                 Err(error) => {
-                    if let Some(control) = app.get_webview_window(&control_label) {
+                    if let Some(control) = app.get_webview_window(&mini_control_label(parent_label)) {
                         let _ = control.close();
                     }
                     return Err(error);
                 }
             };
-            match click_registry.0.lock() {
-                Ok(mut windows) => {
-                    windows.insert(parent_label.clone(), styles);
+            match registry.state.lock() {
+                Ok(mut state) => {
+                    state.window_styles.insert(parent_label.to_string(), styles);
                 }
                 Err(error) => {
                     restore_native_window_styles(&styles);
                     let _ = parent.set_ignore_cursor_events(false);
-                    if let Some(control) = app.get_webview_window(&control_label) {
+                    if let Some(control) = app.get_webview_window(&mini_control_label(parent_label)) {
                         let _ = control.close();
                     }
                     return Err(error.to_string());
                 }
             }
-        }
-        #[cfg(not(target_os = "windows"))]
-        parent
-            .set_ignore_cursor_events(true)
-            .map_err(|error| error.to_string())?;
-    } else {
-        #[cfg(target_os = "windows")]
-        {
-            let styles = click_registry
-                .0
-                .lock()
-                .map_err(|error| error.to_string())?
-                .remove(&parent_label);
-            parent
-                .set_ignore_cursor_events(false)
-                .map_err(|error| error.to_string())?;
-            if let Some(mut styles) = styles {
-                sync_native_child_click_through(&parent, &mut styles, false)?;
-                restore_native_window_styles(&styles);
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        parent
-            .set_ignore_cursor_events(false)
-            .map_err(|error| error.to_string())?;
-        if let Some(control) = app.get_webview_window(&control_label) {
-            control.close().map_err(|error| error.to_string())?;
+            start_click_through_resync(app.clone(), parent_label.to_string());
         }
     }
-
-    app.emit_to(&parent_label, "mini-note-click-through-changed", enabled)
+    #[cfg(not(target_os = "windows"))]
+    parent
+        .set_ignore_cursor_events(true)
         .map_err(|error| error.to_string())?;
+
+    let _ = app.emit_to(parent_label, "mini-note-click-through-changed", true);
+    Ok(())
+}
+
+fn disable_all_mini_note_click_through(
+    app: &AppHandle,
+    registry: &ClickThroughWindowRegistry,
+) -> Result<(), String> {
+    let mini_labels = mini_note_window_labels(app);
+    #[cfg(target_os = "windows")]
+    let window_styles = {
+        let mut state = registry.state.lock().map_err(|error| error.to_string())?;
+        state.enabled = false;
+        std::mem::take(&mut state.window_styles)
+    };
+    #[cfg(not(target_os = "windows"))]
+    {
+        registry.state.lock().map_err(|error| error.to_string())?.enabled = false;
+    }
+
+    let mut first_error = None;
+    for parent_label in &mini_labels {
+        if let Some(parent) = app.get_webview_window(parent_label) {
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(error) = parent.set_ignore_cursor_events(false) {
+                    first_error.get_or_insert_with(|| error.to_string());
+                }
+                if let Some(mut styles) = window_styles.get(parent_label).cloned() {
+                    if let Err(error) = sync_native_child_click_through(&parent, &mut styles, false) {
+                        first_error.get_or_insert(error);
+                    }
+                    restore_native_window_styles(&styles);
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            if let Err(error) = parent.set_ignore_cursor_events(false) {
+                first_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+        let _ = app.emit_to(parent_label, "mini-note-click-through-changed", false);
+    }
+
+    for (label, control) in app.webview_windows() {
+        if label.starts_with("mini-note-control-") {
+            if let Err(error) = control.close() {
+                first_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn enable_new_mini_note_click_through_if_needed(app: &AppHandle, parent_label: &str) -> Result<(), String> {
+    let registry = app.state::<ClickThroughWindowRegistry>();
+    let enabled = registry
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .enabled;
+    if !enabled {
+        return Ok(());
+    }
+    let _operation = registry.operation.lock().map_err(|error| error.to_string())?;
+    if registry
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .enabled
+    {
+        if let Err(error) = enable_mini_note_click_through_window(app, registry.inner(), parent_label) {
+            let _ = disable_all_mini_note_click_through(app, registry.inner());
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_mini_note_click_through_state(
+    click_registry: State<'_, ClickThroughWindowRegistry>,
+) -> Result<bool, String> {
+    Ok(click_registry
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .enabled)
+}
+
+#[tauri::command]
+async fn set_mini_note_click_through(
+    app: AppHandle,
+    click_registry: State<'_, ClickThroughWindowRegistry>,
+    parent_label: String,
+    enabled: bool,
+) -> Result<(), String> {
+    if !is_mini_note_window_label(&parent_label) {
+        return Err("Click-through is only available for mini note windows.".to_string());
+    }
+    let _operation = click_registry.operation.lock().map_err(|error| error.to_string())?;
+    if !enabled {
+        return disable_all_mini_note_click_through(&app, click_registry.inner());
+    }
+
+    click_registry
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .enabled = true;
+    for label in mini_note_window_labels(&app) {
+        if let Err(error) = enable_mini_note_click_through_window(&app, click_registry.inner(), &label) {
+            let _ = disable_all_mini_note_click_through(&app, click_registry.inner());
+            return Err(error);
+        }
+    }
     Ok(())
 }
 
@@ -1316,6 +1499,7 @@ pub fn run() {
             open_mini_note_window,
             open_mini_note_pair,
             set_main_split_open,
+            get_mini_note_click_through_state,
             set_mini_note_click_through,
             open_file_in_main,
             toggle_app_windows
@@ -1326,7 +1510,8 @@ pub fn run() {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{click_through_style, expanded_split_geometry};
+    use super::{click_through_style, expanded_split_geometry, mini_control_geometry};
+    use tauri::{PhysicalPosition, PhysicalSize};
     use windows::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_TRANSPARENT};
 
     #[test]
@@ -1350,5 +1535,15 @@ mod tests {
         let (x, width) = expanded_split_geometry(700, 420, 420, 0, 1200);
         assert_eq!(x, 360);
         assert_eq!(width, 840);
+    }
+
+    #[test]
+    fn mini_control_uses_exact_scaled_square_without_windows_minimum_track_size() {
+        let geometry = mini_control_geometry(
+            PhysicalPosition::new(100, 50),
+            PhysicalSize::new(260, 320),
+            1.25,
+        );
+        assert_eq!(geometry, (271, 59, 28));
     }
 }

@@ -1,0 +1,28 @@
+{
+  "productName": "TopPlan Clickthrough Test",
+  "identifier": "com.topplan.clickthrough-test",
+  "build": {
+    "beforeDevCommand": "pnpm dev:e2e",
+    "devUrl": "http://127.0.0.1:1430"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "TopPlan Clickthrough Test",
+        "label": "main",
+        "width": 420,
+        "height": 640,
+        "x": 1050,
+        "y": 80,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "visible": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

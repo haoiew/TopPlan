@@ -442,6 +442,76 @@ test('mini note controls stay above the scrollbar clearance area', async ({ page
   expect(controlTops).toEqual([5]);
 });
 
+test('mini note top controls center their icons and reveal inactive controls on hover', async ({ page }) => {
+  await page.goto(`${TOPPLAN_TEST_URL}?topplanMode=mini`);
+  await page.waitForFunction(() => window.__TOPPLAN_TEST__);
+  await page.evaluate(async (value) => window.__TOPPLAN_TEST__.setDocument(value), ['##### 一、今日计划', '', '- [ ] 1. 测试任务'].join('\n'));
+  await page.click('button[title="便签模式"]');
+  await expect(page.locator('.mini-note-shell')).toBeVisible();
+
+  const geometry = await page.locator('.mini-click-through, .mini-exit, .mini-close').evaluateAll((controls) => {
+    return controls.map((control) => {
+      const button = control.getBoundingClientRect();
+      const icon = control.querySelector('svg').getBoundingClientRect();
+      const style = getComputedStyle(control);
+      return {
+        className: control.className,
+        deltaX: Math.abs(button.left + button.width / 2 - (icon.left + icon.width / 2)),
+        deltaY: Math.abs(button.top + button.height / 2 - (icon.top + icon.height / 2)),
+        padding: style.padding,
+      };
+    });
+  });
+
+  expect(geometry).toHaveLength(3);
+  for (const control of geometry) {
+    expect(control.deltaX, control.className).toBeLessThanOrEqual(0.5);
+    expect(control.deltaY, control.className).toBeLessThanOrEqual(0.5);
+    expect(control.padding, control.className).toBe('0px');
+  }
+  await page.locator('.mini-note-shell').hover();
+  for (const selector of ['.mini-click-through', '.mini-exit', '.mini-close']) {
+    await expect(page.locator(selector)).toHaveCSS('opacity', '0.52');
+  }
+});
+
+test('active click-through control renders only the status icon on a transparent surface', async ({ page }) => {
+  await page.goto(`${TOPPLAN_TEST_URL}?topplanMode=mini-control&parent=bWluaS1ub3RlLXRlc3Q`);
+  const control = page.locator('.mini-through-control');
+  await expect(control).toBeVisible();
+
+  const appearance = await page.evaluate(() => {
+    const shellStyle = getComputedStyle(document.querySelector('.app-shell'));
+    const buttonStyle = getComputedStyle(document.querySelector('.mini-through-control'));
+    const accentProbe = document.createElement('span');
+    accentProbe.style.color = 'var(--accent)';
+    document.body.append(accentProbe);
+    const accentColor = getComputedStyle(accentProbe).color;
+    accentProbe.remove();
+    return {
+      shellBackground: shellStyle.backgroundColor,
+      shellBorder: shellStyle.borderTopWidth,
+      buttonBackground: buttonStyle.backgroundColor,
+      buttonBorder: buttonStyle.borderTopWidth,
+      buttonColor: buttonStyle.color,
+      buttonShadow: buttonStyle.boxShadow,
+      accentColor,
+      hasIcon: Boolean(document.querySelector('.mini-through-control svg')),
+    };
+  });
+
+  expect(appearance).toEqual({
+    shellBackground: 'rgba(0, 0, 0, 0)',
+    shellBorder: '0px',
+    buttonBackground: 'rgba(0, 0, 0, 0)',
+    buttonBorder: '0px',
+    buttonColor: appearance.accentColor,
+    buttonShadow: 'none',
+    accentColor: appearance.accentColor,
+    hasIcon: true,
+  });
+});
+
 test('split view keeps the file sidebar overlaid instead of consuming an editor column', async ({ page }) => {
   await loadFixture(page);
   await page.evaluate(async () => window.__TOPPLAN_TEST__.setSplitDocuments('# 长期计划', '# 今日工作'));

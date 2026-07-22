@@ -10,8 +10,7 @@
     Image,
     Maximize2,
     Minus,
-    MousePointer2,
-    MousePointer2Off,
+    MousePointerClick,
     NotepadText,
     PanelLeftClose,
     PanelLeftOpen,
@@ -45,6 +44,7 @@
     cleanupStaleDeletedImages,
     closeWindow,
     createMarkdownFile,
+    getMiniNoteClickThroughState,
     getSettings,
     hideWindow,
     isTauriRuntime,
@@ -998,11 +998,10 @@
       return;
     }
     const next = !miniClickThrough;
-    miniClickThrough = next;
     try {
       await setMiniNoteClickThrough(currentWindowLabel(), next);
+      miniClickThrough = next;
     } catch (error) {
-      miniClickThrough = !next;
       setError(error);
     }
   }
@@ -1511,6 +1510,11 @@
         miniClickThrough = enabled;
       }).then((unlisten) => {
         unlistenMiniClickThrough = unlisten;
+        void getMiniNoteClickThroughState()
+          .then((enabled) => {
+            miniClickThrough = enabled;
+          })
+          .catch(setError);
       });
     }
     if (isTauriRuntime && !isMiniControlWindow) {
@@ -1571,6 +1575,7 @@
 
 <main
   class:mini-mode={miniMode}
+  class:mini-control-mode={isMiniControlWindow}
   class:scroll-visible={scrollVisible}
   class:to-mini={transitionMode === 'to-mini'}
   class:to-main={transitionMode === 'to-main'}
@@ -1581,7 +1586,7 @@
 >
   {#if isMiniControlWindow}
     <button class="mini-through-control" title={text.disableClickThrough} onclick={disableMiniClickThroughFromControl}>
-      <MousePointer2Off size={13} />
+      <MousePointerClick size={12} strokeWidth={1.7} aria-hidden="true" />
     </button>
   {:else if miniMode}
     <div class="mini-note-shell" role="group" aria-label="TopPlan mini note mode">
@@ -1593,11 +1598,7 @@
           aria-pressed={miniClickThrough}
           onclick={toggleMiniClickThrough}
         >
-          {#if miniClickThrough}
-            <MousePointer2Off size={11} />
-          {:else}
-            <MousePointer2 size={11} />
-          {/if}
+          <MousePointerClick size={12} strokeWidth={1.7} aria-hidden="true" />
         </button>
       {/if}
       <button class="mini-exit" title={isMiniWindow ? text.openInMain : text.exitMiniMode} onclick={openCurrentFileInMain}>

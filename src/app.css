@@ -134,7 +134,8 @@ button {
   color: var(--ink);
 }
 
-.app-shell.mini-mode {
+.app-shell.mini-mode,
+.app-shell.mini-control-mode {
   border: 0;
   background: transparent;
   overflow: visible;
@@ -729,9 +730,12 @@ input[type='checkbox']:checked {
   border: 0;
   border-radius: 4px;
   background: transparent;
+  box-shadow: none;
   color: var(--muted);
   cursor: pointer;
+  line-height: 0;
   opacity: 0;
+  padding: 0;
   transition: opacity 120ms ease, background 120ms ease;
 }
 
@@ -754,7 +758,6 @@ input[type='checkbox']:checked {
 }
 
 .mini-click-through:hover,
-.mini-click-through.active,
 .mini-exit:hover,
 .mini-close:hover {
   background: var(--accent-soft);
@@ -762,17 +765,47 @@ input[type='checkbox']:checked {
   opacity: 0.9;
 }
 
+.mini-click-through.active {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent-strong);
+  opacity: 0;
+}
+
+.mini-click-through svg,
+.mini-exit svg,
+.mini-close svg,
+.mini-through-control svg {
+  display: block;
+  pointer-events: none;
+}
+
 .mini-through-control {
   position: fixed;
-  inset: 1px;
+  inset: 0;
   display: grid;
+  width: 100%;
+  height: 100%;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--line-strong) 58%, transparent);
-  border-radius: 5px;
-  background: rgb(var(--mini-bg-rgb) / 0.92);
-  color: var(--accent-strong);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(32, 58, 88, 0.14);
+  box-shadow: none;
+  line-height: 0;
+  opacity: 0.88;
+  padding: 0;
+  transition: color 120ms ease, opacity 120ms ease;
+}
+
+.mini-through-control:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  opacity: 1;
 }
 
 .mini-move-zone,

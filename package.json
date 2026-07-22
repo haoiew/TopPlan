@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "test:e2e": "node scripts/run-e2e.mjs"
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:clickthrough": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-clickthrough-smoke.ps1"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

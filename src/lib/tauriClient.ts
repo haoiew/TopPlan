@@ -192,6 +192,11 @@ export async function setMiniNoteClickThrough(parentLabel: string, enabled: bool
   await invoke('set_mini_note_click_through', { parentLabel, enabled });
 }
 
+export async function getMiniNoteClickThroughState(): Promise<boolean> {
+  requireTauri();
+  return invoke<boolean>('get_mini_note_click_through_state');
+}
+
 export async function onMiniNoteClickThroughChanged(callback: (enabled: boolean) => void): Promise<() => void> {
   requireTauri();
   return listen<boolean>('mini-note-click-through-changed', (event) => callback(event.payload));
