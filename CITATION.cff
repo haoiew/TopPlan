@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use TopPlan, please cite the software using this metadata."
+title: "TopPlan"
+type: software
+authors:
+  - family-names: "Haoiew"
+    website: "https://github.com/haoiew"
+abstract: >-
+  TopPlan is a local-first Windows daily planner and Markdown task manager
+  for today's plan, quick work notes, and always-visible desktop reminders.
+version: 0.3.0
+date-released: 2026-07-22
+repository-code: "https://github.com/haoiew/TopPlan"
+url: "https://github.com/haoiew/TopPlan/releases/latest"
+license: CC-BY-4.0
+keywords:
+  - daily planner
+  - Markdown task manager
+  - local-first software
+  - Windows desktop application
+  - productivity
+  - Tauri

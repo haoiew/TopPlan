@@ -2,7 +2,28 @@
   "name": "topplan",
   "private": true,
   "version": "0.3.0",
-  "description": "A lightweight always-on-top local Markdown planner for Windows.",
+  "description": "A local-first Windows daily planner and Markdown task manager for today's plan and quick work notes.",
+  "keywords": [
+    "windows",
+    "desktop-app",
+    "daily-planner",
+    "task-manager",
+    "markdown",
+    "local-first",
+    "productivity",
+    "tauri",
+    "svelte"
+  ],
+  "homepage": "https://github.com/haoiew/TopPlan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haoiew/TopPlan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haoiew/TopPlan/issues"
+  },
+  "author": "Haoiew",
+  "license": "CC-BY-4.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",

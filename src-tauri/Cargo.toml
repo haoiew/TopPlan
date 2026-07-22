@@ -1,8 +1,13 @@
 [package]
 name = "topplan"
 version = "0.3.0"
-description = "A lightweight always-on-top local Markdown planner."
-authors = ["TopPlan"]
+description = "A local-first Windows daily planner and Markdown task manager."
+authors = ["Haoiew"]
+license = "CC-BY-4.0"
+repository = "https://github.com/haoiew/TopPlan"
+homepage = "https://github.com/haoiew/TopPlan"
+keywords = ["windows", "planner", "markdown", "productivity", "tauri"]
+categories = ["gui"]
 edition = "2021"
 
 [lib]
